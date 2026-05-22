@@ -20,11 +20,9 @@ __pycache__/
 # Extracted AAM Pro internals (proprietary, do not redistribute)
 BOOT-INF/
 
-# Downloaded/generated audio assets — regenerate via tools/download_seed_assets.ps1
-# (Keep ATTRIBUTION.md + README.md + common_announcements.md in assets/)
-assets/bells/
-assets/effects/
-assets/music/
+# Per-user ElevenLabs-generated voice samples (each user generates their own
+# via the API). The CC0/CC-BY redistributable sets in bells/, effects/, music/
+# are committed.
 assets/voice/
 
 # IDE
