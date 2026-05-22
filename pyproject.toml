@@ -1,0 +1,28 @@
+[project]
+name = "aamp-easy-scheduler"
+version = "0.1.0"
+description = "Voice/NL-driven scheduling for AXIS Audio Manager Pro"
+requires-python = ">=3.12"
+dependencies = [
+    "psycopg[binary]>=3.2",
+    "pydantic>=2.7",
+    "mcp>=1.2",
+    "httpx>=0.27",
+    "google-genai>=2.5",
+    "zeroconf>=0.131",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "rich>=13"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aamp"]
+
+[project.scripts]
+aamp-mcp = "aamp.mcp_server:main"
+aamp-describe = "aamp.cli:describe_main"
+aamp-chat = "aamp.chat:main"

@@ -1,0 +1,32 @@
+# Credentials — never commit
+.aamp_credentials
+.env
+
+# Per-user state
+.browser-state/
+.venv/
+.claude/settings.local.json
+
+# Generated
+logs/
+intent/site_*.md
+*.egg-info/
+__pycache__/
+*.pyc
+
+# Device-onboarding parameter cache (per-deployment, not source-of-truth)
+.aamp_axis_paramcache.json
+
+# Extracted AAM Pro internals (proprietary, do not redistribute)
+BOOT-INF/
+
+# Downloaded/generated audio assets — regenerate via tools/download_seed_assets.ps1
+# (Keep ATTRIBUTION.md + README.md + common_announcements.md in assets/)
+assets/bells/
+assets/effects/
+assets/music/
+assets/voice/
+
+# IDE
+.vscode/
+.idea/
