@@ -295,8 +295,12 @@ def onboard_device(
             else:
                 if not cfg.device_default_password:
                     s2.mark("failed",
-                            "device needs initial setup but no "
-                            "AAMP_DEVICE_DEFAULT_PASSWORD configured",
+                            "No fleet device password is configured. "
+                            "To set it without exposing it in chat, open a "
+                            "TERMINAL (not chat) and run: "
+                            "aamp-set-credential device/default_password. "
+                            "Do NOT type the password into chat — it would "
+                            "be logged and sent to the LLM.",
                             error="missing_default_password")
                     return result.finalize()
                 try:
@@ -312,10 +316,13 @@ def onboard_device(
             candidates = cfg.device_password_candidates
             if not candidates:
                 s2.mark("failed",
-                        "device requires authentication but no candidate "
-                        "passwords are configured "
-                        "(set AAMP_DEVICE_DEFAULT_PASSWORD / "
-                        "AAMP_DEVICE_PASSWORD_CANDIDATES)",
+                        "Device requires authentication but no candidate "
+                        "passwords are configured. To set the fleet "
+                        "password without exposing it in chat, open a "
+                        "TERMINAL (not chat) and run: "
+                        "aamp-set-credential device/default_password. "
+                        "Do NOT type the password into chat — it would "
+                        "be logged and sent to the LLM.",
                         error="no_candidates")
                 return result.finalize()
             try:

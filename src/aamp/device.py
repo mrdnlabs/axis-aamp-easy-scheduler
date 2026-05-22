@@ -24,13 +24,72 @@ Auth model (verified per Axis docs, OS 11.6 split):
 from __future__ import annotations
 
 import json
+import re
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterator, Optional, Tuple
+from typing import Any, Iterable, Iterator, Optional, Tuple
 
 import httpx
+
+
+# ---------------------------------------------------------------------------
+# Defense-in-depth: scrub passwords out of error bodies before they reach
+# VapixError → onboard step traces → MCP tool output → LLM context.
+#
+# Axis CGI endpoints take credentials in query strings (notably pwdgrp.cgi
+# which uses ?pwd=...). Firmware variants echo the request line in failure
+# bodies. Even if the current devices don't, any future device could — so
+# every VapixError raised here routes the body through ``_scrub_text``.
+# ---------------------------------------------------------------------------
+
+_SENSITIVE_PARAM_NAMES: frozenset[str] = frozenset({
+    "pwd", "password", "newpwd", "passwd", "current_pwd", "new_password",
+})
+
+_MASK = "********"   # fixed length — no character-count leak
+
+# Match query-param style key=value where the key is sensitive.
+# We catch this BEFORE substituting any specific value, so even values we
+# haven't registered yet can't leak via the query-string echo path.
+_PARAM_LEAK_RE = re.compile(
+    r"(?P<key>" + "|".join(sorted(_SENSITIVE_PARAM_NAMES, key=len, reverse=True))
+    + r")(?P<sep>=)(?P<val>[^&\s\"'<>]+)",
+    re.IGNORECASE,
+)
+
+# Minimum length to register a substring as scrubbable. Anything shorter is
+# likely to be a substring of unrelated content (e.g. password "axis" would
+# corrupt every occurrence of the word "axis" in error text).
+_MIN_SCRUB_LEN = 6
+
+
+def _scrub_text(text: str, sensitive_values: Iterable[str]) -> str:
+    """Replace every literal occurrence of any sensitive value with the mask.
+
+    Also strips query-string ``KEY=VALUE`` pairs whose KEY is in
+    ``_SENSITIVE_PARAM_NAMES`` — this catches passwords echoed back in
+    error bodies even when the literal value isn't in our ``sensitive_values``
+    set (e.g. when a device echoes a *failed* password attempt).
+
+    Idempotent. Safe to call on already-scrubbed text.
+    """
+    if not text:
+        return text
+    # 1) Generic query-param-style strip — handles "...&pwd=secret&...".
+    out = _PARAM_LEAK_RE.sub(lambda m: f"{m.group('key')}{m.group('sep')}{_MASK}", text)
+    # 2) Literal-value replacement — handles cases where the password
+    #    appears outside any ?key=value context (e.g. embedded in JSON,
+    #    quoted in an error message). Sort by length DESC so longer
+    #    values are replaced first (handles overlapping prefixes).
+    values = sorted(
+        {v for v in sensitive_values if v and len(v) >= _MIN_SCRUB_LEN},
+        key=len, reverse=True,
+    )
+    for v in values:
+        out = out.replace(v, _MASK)
+    return out
 
 
 class VapixError(RuntimeError):
@@ -103,6 +162,15 @@ class AxisDevice:
         if user and password:
             self._auth = httpx.DigestAuth(username=user, password=password)
 
+        # Passwords this device has ever held. Anything in here gets masked
+        # before VapixError carries it back to the caller. Populated by
+        # __init__, _set_credentials, and (critically) by create_root BEFORE
+        # the HTTP call — so a failure body can't echo the about-to-be-set
+        # password.
+        self._sensitive_values: set[str] = set()
+        if password:
+            self._sensitive_values.add(password)
+
     # -- lifecycle ------------------------------------------------------
 
     def close(self) -> None:
@@ -118,6 +186,19 @@ class AxisDevice:
         self.close()
 
     # -- low-level helpers ---------------------------------------------
+
+    def _scrub(self, text: str) -> str:
+        """Run ``text`` through the module scrubber with this instance's secret set."""
+        return _scrub_text(text, self._sensitive_values)
+
+    def _make_error(self, status: int, method: str, path: str, body: str) -> VapixError:
+        """Construct a VapixError with the body scrubbed of any known secrets.
+
+        Use this at every call site that would otherwise raise VapixError
+        with response data — ``r.text``, ``r.headers``, or a string built
+        from an httpx exception that may include the URL/query string.
+        """
+        return VapixError(status, method, path, self._scrub(body))
 
     def _post_json_rpc(
         self,
@@ -146,14 +227,14 @@ class AxisDevice:
         try:
             r = self._client.post(path, **kwargs)
         except httpx.RequestError as e:
-            raise VapixError(0, "POST", path, f"connection error: {e}") from e
+            raise self._make_error(0, "POST", path, f"connection error: {e}") from e
         if r.status_code >= 400:
-            raise VapixError(r.status_code, "POST", path, r.text or "")
+            raise self._make_error(r.status_code, "POST", path, r.text or "")
         try:
             return r.json()
         except json.JSONDecodeError:
-            raise VapixError(r.status_code, "POST", path,
-                              f"non-JSON response: {r.text[:200]!r}")
+            raise self._make_error(r.status_code, "POST", path,
+                                    f"non-JSON response: {r.text[:200]!r}")
 
     def _get(self, path: str, *, params: Optional[dict[str, Any]] = None,
               auth: bool = False) -> httpx.Response:
@@ -165,7 +246,7 @@ class AxisDevice:
         try:
             return self._client.get(path, **kwargs)
         except httpx.RequestError as e:
-            raise VapixError(0, "GET", path, f"connection error: {e}") from e
+            raise self._make_error(0, "GET", path, f"connection error: {e}") from e
 
     # -- read-only API -------------------------------------------------
 
@@ -204,8 +285,8 @@ class AxisDevice:
                                         method="getAllProperties", auth=True)
             props = (resp.get("data") or {}).get("propertyList") or {}
         if "error" in resp:
-            raise VapixError(200, "POST", "/axis-cgi/basicdeviceinfo.cgi",
-                              json.dumps(resp["error"]))
+            raise self._make_error(200, "POST", "/axis-cgi/basicdeviceinfo.cgi",
+                                    json.dumps(resp["error"]))
         return {
             "model": props.get("ProdShortName") or props.get("ProdNbr"),
             "model_nbr": props.get("ProdNbr"),
@@ -232,8 +313,8 @@ class AxisDevice:
                                     method="systemready",
                                     params={"timeout": timeout})
         if "error" in resp:
-            raise VapixError(200, "POST", "/axis-cgi/systemready.cgi",
-                              json.dumps(resp["error"]))
+            raise self._make_error(200, "POST", "/axis-cgi/systemready.cgi",
+                                    json.dumps(resp["error"]))
         return resp.get("data") or {}
 
     def needs_initial_setup(self) -> bool:
@@ -266,6 +347,10 @@ class AxisDevice:
         self._user = user
         self._password = password
         self._auth = httpx.DigestAuth(username=user, password=password)
+        # Register for scrubbing — any future error body that echoes this
+        # password back to us will be masked before reaching the caller.
+        if password:
+            self._sensitive_values.add(password)
 
     def try_authenticate(
         self,
@@ -305,6 +390,14 @@ class AxisDevice:
         cand_list = list(candidates or [])
         if not cand_list:
             return AuthState.UNKNOWN_PASSWORD, None
+
+        # Register every candidate as scrubbable BEFORE we try it — a failed
+        # attempt that echoes the password into an error body would otherwise
+        # leak. Includes wrong-password attempts; the cost is masking a few
+        # unrelated occurrences, which is fine.
+        for pw in cand_list:
+            if pw:
+                self._sensitive_values.add(pw)
 
         for pw in cand_list:
             auth = httpx.DigestAuth(username=effective_user, password=pw)
@@ -354,6 +447,13 @@ class AxisDevice:
         if not password:
             raise ValueError("create_root requires a non-empty password")
 
+        # Register BEFORE the HTTP call — pwdgrp.cgi puts the password in
+        # the URL query string. If the device returns an error and we let
+        # the raw response body propagate, the password would round-trip
+        # through VapixError → onboard step trace → MCP tool result → LLM.
+        # Registering here ensures the scrubber catches it on the way out.
+        self._sensitive_values.add(password)
+
         # pwdgrp.cgi takes form-style query params:
         #   action=add&user=root&pwd=...&grp=root&sgrp=admin:operator:viewer:ptz
         # The "sgrp" list controls which Axis "secondary groups" the user
@@ -375,22 +475,22 @@ class AxisDevice:
             # — POST was my erroneous guess from the original implementation.
             r = self._client.get("/axis-cgi/pwdgrp.cgi", params=params)
         except httpx.RequestError as e:
-            raise VapixError(0, "GET", "/axis-cgi/pwdgrp.cgi",
-                              f"connection error: {e}") from e
+            raise self._make_error(0, "GET", "/axis-cgi/pwdgrp.cgi",
+                                    f"connection error: {e}") from e
 
         # AXIS returns 200 with a tiny text/html body on success.
         # Success body: "Created account <user>." (often wrapped in <html>)
         # Failure body: "Error: ..." or "<html>...Unauthorized..." (etc.)
         body = (r.text or "").strip()
         if r.status_code >= 400:
-            raise VapixError(r.status_code, "GET", "/axis-cgi/pwdgrp.cgi", body)
+            raise self._make_error(r.status_code, "GET", "/axis-cgi/pwdgrp.cgi", body)
         body_low = body.lower()
         # The Axis HTML wraps the message; we check for the success token
         # OR the absence of an error indicator.
         if "created account" in body_low:
             pass  # success
         elif "error" in body_low or "unauthorized" in body_low:
-            raise VapixError(200, "GET", "/axis-cgi/pwdgrp.cgi", body)
+            raise self._make_error(200, "GET", "/axis-cgi/pwdgrp.cgi", body)
 
         # Attach the new creds so the next call in the pipeline doesn't
         # have to know we just provisioned the device.
@@ -410,7 +510,7 @@ class AxisDevice:
         """
         r = self._get("/axis-cgi/applications/list.cgi", auth=True)
         if r.status_code >= 400:
-            raise VapixError(r.status_code, "GET",
+            raise self._make_error(r.status_code, "GET",
                               "/axis-cgi/applications/list.cgi", r.text or "")
         # Body is XML like:
         #   <reply result="ok">
@@ -422,12 +522,12 @@ class AxisDevice:
         try:
             root = ET.fromstring(r.text)
         except ET.ParseError as e:
-            raise VapixError(r.status_code, "GET",
+            raise self._make_error(r.status_code, "GET",
                               "/axis-cgi/applications/list.cgi",
                               f"unparseable XML: {e}: {r.text[:200]!r}") from e
         result = root.attrib.get("result", "").lower()
         if result and result != "ok":
-            raise VapixError(r.status_code, "GET",
+            raise self._make_error(r.status_code, "GET",
                               "/axis-cgi/applications/list.cgi",
                               f"reply result={result!r}: {r.text[:300]}")
         return [dict(app.attrib) for app in root.findall("application")]
@@ -460,7 +560,7 @@ class AxisDevice:
         if not path.exists():
             raise FileNotFoundError(f"ACAP file not found: {path}")
         if self._auth is None:
-            raise VapixError(0, "POST", "/axis-cgi/applications/upload.cgi",
+            raise self._make_error(0, "POST", "/axis-cgi/applications/upload.cgi",
                               "upload_acap requires authentication; "
                               "call try_authenticate() or create_root() first")
 
@@ -476,13 +576,13 @@ class AxisDevice:
                     timeout=httpx.Timeout(120.0, connect=4.0),
                 )
             except httpx.RequestError as e:
-                raise VapixError(0, "POST",
+                raise self._make_error(0, "POST",
                                   "/axis-cgi/applications/upload.cgi",
                                   f"connection error: {e}") from e
 
         body = (r.text or "").strip()
         if r.status_code >= 400:
-            raise VapixError(r.status_code, "POST",
+            raise self._make_error(r.status_code, "POST",
                               "/axis-cgi/applications/upload.cgi", body)
         # Axis returns 200 with body "OK" on success, or 200 with a body
         # starting "Error: N" on application-level failures.
@@ -501,7 +601,7 @@ class AxisDevice:
                 hint = " — invalid .eap package format"
             elif "6" in body:
                 hint = " — device out of space"
-            raise VapixError(r.status_code, "POST",
+            raise self._make_error(r.status_code, "POST",
                               "/axis-cgi/applications/upload.cgi",
                               body + hint)
         return body or "OK"
@@ -509,7 +609,7 @@ class AxisDevice:
     def _control_application(self, action: str, name: str) -> str:
         """POST ``/axis-cgi/applications/control.cgi?action=...&package=...``."""
         if self._auth is None:
-            raise VapixError(0, "POST", "/axis-cgi/applications/control.cgi",
+            raise self._make_error(0, "POST", "/axis-cgi/applications/control.cgi",
                               "control_application requires authentication")
         try:
             r = self._client.post(
@@ -518,15 +618,15 @@ class AxisDevice:
                 auth=self._auth,
             )
         except httpx.RequestError as e:
-            raise VapixError(0, "POST",
+            raise self._make_error(0, "POST",
                               "/axis-cgi/applications/control.cgi",
                               f"connection error: {e}") from e
         body = (r.text or "").strip()
         if r.status_code >= 400:
-            raise VapixError(r.status_code, "POST",
+            raise self._make_error(r.status_code, "POST",
                               "/axis-cgi/applications/control.cgi", body)
         if body.lower().startswith("error"):
-            raise VapixError(r.status_code, "POST",
+            raise self._make_error(r.status_code, "POST",
                               "/axis-cgi/applications/control.cgi", body)
         return body or "OK"
 
@@ -560,18 +660,18 @@ class AxisDevice:
         Requires authentication.
         """
         if self._auth is None:
-            raise VapixError(0, "GET", "/axis-cgi/param.cgi",
+            raise self._make_error(0, "GET", "/axis-cgi/param.cgi",
                               "param_list requires authentication")
         params: dict[str, Any] = {"action": "list"}
         if group:
             params["group"] = group
         r = self._get("/axis-cgi/param.cgi", params=params, auth=True)
         if r.status_code >= 400:
-            raise VapixError(r.status_code, "GET", "/axis-cgi/param.cgi",
+            raise self._make_error(r.status_code, "GET", "/axis-cgi/param.cgi",
                               r.text or "")
         body = r.text or ""
         if body.lstrip().lower().startswith("# error"):
-            raise VapixError(r.status_code, "GET", "/axis-cgi/param.cgi", body)
+            raise self._make_error(r.status_code, "GET", "/axis-cgi/param.cgi", body)
         out: dict[str, str] = {}
         for line in body.splitlines():
             line = line.strip()
@@ -598,7 +698,7 @@ class AxisDevice:
         Requires authentication.
         """
         if self._auth is None:
-            raise VapixError(0, "GET", "/axis-cgi/param.cgi",
+            raise self._make_error(0, "GET", "/axis-cgi/param.cgi",
                               "param_set requires authentication")
         if not updates:
             return "OK"
@@ -608,13 +708,13 @@ class AxisDevice:
             r = self._client.get("/axis-cgi/param.cgi", params=params,
                                   auth=self._auth)
         except httpx.RequestError as e:
-            raise VapixError(0, "GET", "/axis-cgi/param.cgi",
+            raise self._make_error(0, "GET", "/axis-cgi/param.cgi",
                               f"connection error: {e}") from e
         body = (r.text or "").strip()
         if r.status_code >= 400:
-            raise VapixError(r.status_code, "GET", "/axis-cgi/param.cgi", body)
+            raise self._make_error(r.status_code, "GET", "/axis-cgi/param.cgi", body)
         if body.lower().startswith(("# error", "error")):
-            raise VapixError(r.status_code, "GET", "/axis-cgi/param.cgi", body)
+            raise self._make_error(r.status_code, "GET", "/axis-cgi/param.cgi", body)
         return body or "OK"
 
     # -- system control ----------------------------------------------------
@@ -627,16 +727,16 @@ class AxisDevice:
         roughly 45-90 seconds afterward depending on model.
         """
         if self._auth is None:
-            raise VapixError(0, "POST", "/axis-cgi/restart.cgi",
+            raise self._make_error(0, "POST", "/axis-cgi/restart.cgi",
                               "reboot requires authentication")
         try:
             r = self._client.post("/axis-cgi/restart.cgi", auth=self._auth)
         except httpx.RequestError as e:
-            raise VapixError(0, "POST", "/axis-cgi/restart.cgi",
+            raise self._make_error(0, "POST", "/axis-cgi/restart.cgi",
                               f"connection error: {e}") from e
         body = (r.text or "").strip()
         if r.status_code >= 400:
-            raise VapixError(r.status_code, "POST", "/axis-cgi/restart.cgi",
+            raise self._make_error(r.status_code, "POST", "/axis-cgi/restart.cgi",
                               body)
         return body or "OK"
 
@@ -658,7 +758,7 @@ class AxisDevice:
         expected to wait ~45-90 seconds before contacting the device again.
         """
         if self._auth is None:
-            raise VapixError(0, "GET", "/axis-cgi/factorydefault.cgi",
+            raise self._make_error(0, "GET", "/axis-cgi/factorydefault.cgi",
                               "factory_default requires authentication")
         path = "/axis-cgi/hardfactorydefault.cgi" if hard else "/axis-cgi/factorydefault.cgi"
         try:
@@ -670,7 +770,7 @@ class AxisDevice:
             return f"connection closed mid-response (likely already rebooting): {e}"
         body = (r.text or "").strip()
         if r.status_code >= 400:
-            raise VapixError(r.status_code, "GET", path, body)
+            raise self._make_error(r.status_code, "GET", path, body)
         return body or "OK"
 
     # -- snapshot helper -----------------------------------------------

@@ -17,6 +17,11 @@ __pycache__/
 # Device-onboarding parameter cache (per-deployment, not source-of-truth)
 .aamp_axis_paramcache.json
 
+# Migration backups created by `aamp-migrate-credentials`
+.aamp_credentials.bak.*
+# Credential-access audit log (also lives in ~ by default — informational)
+.aamp_audit.log
+
 # Extracted AAM Pro internals (proprietary, do not redistribute)
 BOOT-INF/
 

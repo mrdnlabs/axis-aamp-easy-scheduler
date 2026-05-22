@@ -47,23 +47,13 @@ def _safe_slug(text: str, max_len: int = 50) -> str:
 
 
 def _api_key() -> Optional[str]:
-    return os.environ.get("ELEVENLABS_API_KEY") or _api_key_from_credentials()
+    """Fetch the ElevenLabs API key from the credential store.
 
-
-def _api_key_from_credentials() -> Optional[str]:
-    """Fall back to .aamp_credentials in the project root."""
-    project_root = Path(__file__).resolve().parent.parent.parent
-    creds_file = project_root / ".aamp_credentials"
-    if not creds_file.exists():
-        return None
-    for line in creds_file.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        if k.strip() == "ELEVENLABS_API_KEY":
-            return v.strip().strip('"').strip("'") or None
-    return None
+    Resolution is delegated to :func:`aamp.credentials.get_credential_store`,
+    which by default chains OS keyring + ``.aamp_credentials`` fallback.
+    """
+    from .credentials import get_credential_store
+    return get_credential_store().get("elevenlabs", "api_key")
 
 
 def _resolve_voice_id(voice: Optional[str]) -> str:
@@ -108,7 +98,9 @@ def generate_audio(
     api_key = _api_key()
     if not api_key:
         raise RuntimeError(
-            "ELEVENLABS_API_KEY not set. Add it to .aamp_credentials or env."
+            "ElevenLabs API key is not configured. To set it without "
+            "exposing it in chat, open a TERMINAL (not chat) and run:\n"
+            "    aamp-set-credential elevenlabs/api_key"
         )
     voice_id = _resolve_voice_id(voice)
     if output_path is None:

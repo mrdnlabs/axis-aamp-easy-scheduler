@@ -990,6 +990,11 @@ def onboard_axis_device(ip: str, dry_run: bool = False) -> str:
       - The device may take ~30s to appear in AAM Pro after step 4 succeeds.
       - If a device is quarantined by AAM Pro, surface the MAC/serial from
         the result so the user can approve it manually in the SPA.
+      - If a step fails with a "credentials not configured" message, relay
+        the tool's CLI instruction VERBATIM. Do NOT ask the user for a
+        password in chat — passwords belong in the OS keyring, not the
+        chat context. The tool tells the user exactly which `aamp-set-credential`
+        command to run.
     """
     try:
         result = _onboard.onboard_device(ip, dry_run=dry_run)
@@ -1022,6 +1027,11 @@ def onboard_axis_fleet(
     Returns:
         Markdown summary, one section per device. The top line tallies
         ok / failed / partial across the fleet.
+
+    Notes for the chat agent: if any device fails with a "credentials not
+    configured" message, relay the tool's CLI instruction VERBATIM. Do NOT
+    ask the user for a password in chat. The tool tells the user exactly
+    which `aamp-set-credential` command to run in their terminal.
     """
     try:
         results = _onboard.onboard_fleet(

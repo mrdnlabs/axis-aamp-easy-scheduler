@@ -22,7 +22,66 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
+
+
+# ---------------------------------------------------------------------------
+# Scrubber — strips known secret values out of logged text
+# ---------------------------------------------------------------------------
+
+class Scrubber:
+    """Replaces every literal occurrence of any registered secret with a mask.
+
+    Used to defend the on-disk chat transcript against accidental leakage —
+    e.g. if a tool result somehow includes a password, the substring gets
+    masked before the JSONL/Markdown write. Defense in depth: the upstream
+    layers (VAPIX scrubber in device.py, chat agent behavior) should
+    already prevent this, but the transcript is the last writable copy.
+
+    Substrings shorter than :attr:`MIN_LEN` are silently skipped — replacing
+    a 4-character password like "axis" would corrupt every occurrence of
+    that word in unrelated text. Short passwords aren't safe anyway.
+
+    Idempotent. Safe to call on already-scrubbed strings.
+    """
+
+    MASK = "********"        # fixed length, no character-count leak
+    MIN_LEN = 6
+
+    def __init__(self, secret_values: Iterable[str]) -> None:
+        # Sort by length descending so longer values are replaced first —
+        # handles cases where one secret is a prefix of another.
+        self._values = sorted(
+            {v for v in secret_values if v and len(v) >= self.MIN_LEN},
+            key=len, reverse=True,
+        )
+
+    def scrub(self, text: str) -> str:
+        """Mask every registered secret in ``text``."""
+        if not text or not self._values:
+            return text
+        out = text
+        for v in self._values:
+            if v in out:
+                out = out.replace(v, self.MASK)
+        return out
+
+    def scrub_obj(self, obj: Any) -> Any:
+        """Recursively walk ``obj`` (dict/list/tuple/str) and scrub every string leaf."""
+        if isinstance(obj, str):
+            return self.scrub(obj)
+        if isinstance(obj, dict):
+            return {k: self.scrub_obj(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [self.scrub_obj(v) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(self.scrub_obj(v) for v in obj)
+        return obj
+
+
+def _null_scrubber() -> Scrubber:
+    """A no-op scrubber for callers that don't want filtering (tests)."""
+    return Scrubber([])
 
 
 # ---------------------------------------------------------------------------
@@ -99,15 +158,29 @@ class UsageAccumulator:
 
 
 class TranscriptLogger:
-    """Append-only chat transcript writer (sync file I/O; one writer per session)."""
+    """Append-only chat transcript writer (sync file I/O; one writer per session).
 
-    def __init__(self, log_dir: Path) -> None:
+    Optionally accepts a :class:`Scrubber` that is applied to all logged
+    text before disk write. Use this to keep secrets out of the on-disk
+    transcript — see :meth:`aamp.chat.run_chat` for the wiring.
+    """
+
+    def __init__(self, log_dir: Path, *, scrubber: Optional[Scrubber] = None) -> None:
         log_dir.mkdir(parents=True, exist_ok=True)
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.jsonl_path = log_dir / f"chat_{self.session_id}.jsonl"
         self.md_path = log_dir / f"chat_{self.session_id}.md"
         self._jsonl = self.jsonl_path.open("a", encoding="utf-8", buffering=1)
         self._md = self.md_path.open("a", encoding="utf-8", buffering=1)
+        self._scrubber = scrubber or _null_scrubber()
+
+    def _s(self, text: str) -> str:
+        """Shorthand for scrubbing a single string."""
+        return self._scrubber.scrub(text)
+
+    def _so(self, obj: Any) -> Any:
+        """Shorthand for scrubbing an arbitrary object tree."""
+        return self._scrubber.scrub_obj(obj)
 
     # -- private helpers --------------------------------------------------
 
@@ -158,8 +231,10 @@ class TranscriptLogger:
             "system_prompt_path": str(system_prompt_path),
             "system_prompt_chars": system_prompt_chars,
             "tools_count": tools_count,
-            # System prompt logged once for full reproducibility; redact if you share.
-            "system_prompt": system_prompt_text,
+            # System prompt logged once for full reproducibility; scrubber
+            # is still applied so any password value that appears in the
+            # prompt (shouldn't!) gets masked.
+            "system_prompt": self._s(system_prompt_text) if system_prompt_text else None,
         })
         self._write_md(f"# Chat transcript — {ts}\n\n")
         self._write_md(f"- **Model:** `{model}`\n")
@@ -168,10 +243,12 @@ class TranscriptLogger:
         self._write_md("---\n\n")
 
     def log_user(self, text: str) -> None:
+        text = self._s(text)
         self._write_jsonl({"kind": "user", "text": text})
         self._write_md(f"## You — {self._ts()}\n\n{text}\n\n")
 
     def log_assistant_text(self, text: str, *, finish_reason: Optional[str] = None) -> None:
+        text = self._s(text)
         self._write_jsonl({"kind": "assistant_text", "text": text, "finish_reason": finish_reason})
         header = f"## Assistant — {self._ts()}"
         if finish_reason and finish_reason not in ("STOP", "TOOL_USE"):
@@ -179,6 +256,7 @@ class TranscriptLogger:
         self._write_md(f"{header}\n\n{text}\n\n")
 
     def log_tool_call(self, name: str, args: dict[str, Any], *, call_id: Optional[str] = None) -> None:
+        args = self._so(args)
         self._write_jsonl({"kind": "tool_call", "name": name, "args": args, "call_id": call_id})
         self._write_md(f"### Tool call: `{name}`")
         if call_id:
@@ -193,7 +271,8 @@ class TranscriptLogger:
 
     def log_tool_result(self, name: str, result: str, *, call_id: Optional[str] = None,
                          is_error: bool = False) -> None:
-        chars = len(result or "")
+        result = self._s(result or "")
+        chars = len(result)
         self._write_jsonl({
             "kind": "tool_result",
             "name": name,
@@ -204,7 +283,7 @@ class TranscriptLogger:
         })
         label = "ERROR" if is_error else "result"
         summary = f"{name} {label} — {chars} chars"
-        fence = self._safe_fence(result or "")
+        fence = self._safe_fence(result)
         self._write_md(f"<details><summary>{summary}</summary>\n\n")
         self._write_md(f"{fence}\n{result}\n{fence}\n\n")
         self._write_md("</details>\n\n")

@@ -1,19 +1,18 @@
-"""Credential and host configuration for the AAM Pro API client.
+"""Connection configuration for the AAM Pro API client.
 
-Order of resolution (first match wins):
+**Non-secret fields** (host, server name, username, etc.) resolve via:
 1. Explicit kwargs to ``load_config()``
-2. Environment variables: ``AAMP_HOST``, ``AAMP_SERVER_NAME``, ``AAMP_USER``, ``AAMP_PASSWORD``
+2. Environment variables: ``AAMP_HOST``, ``AAMP_SERVER_NAME``, ``AAMP_USER``, ...
 3. ``.aamp_credentials`` file in the project root (KEY=VALUE per line, # comments allowed)
 4. ``.aamp_credentials`` file in the user's home directory
 
-Additionally exposes **device** credentials for the per-device VAPIX client
-used by the onboarding flow:
-- ``AAMP_DEVICE_DEFAULT_USER`` — default admin username on Axis devices (typically ``root``).
-- ``AAMP_DEVICE_DEFAULT_PASSWORD`` — password used for newly provisioned devices, AND the first candidate tried for already-provisioned devices.
-- ``AAMP_DEVICE_PASSWORD_CANDIDATES`` — comma-separated list of additional passwords to try if the default doesn't authenticate. Used when onboarding a heterogeneous fleet.
+**Secret fields** (password, client_secret, device_default_password, device_password_candidates)
+resolve via the credential store (see :mod:`aamp.credentials`). Default
+backend is OS-native keyring with ``.aamp_credentials`` as legacy fallback.
+This keeps secrets out of plaintext config files once they're migrated.
 
-The credentials file is in the project's ``.gitignore`` — do not commit it.
-The password is never logged or included in error messages.
+The legacy ``.aamp_credentials`` file is in the project's ``.gitignore`` —
+do not commit it. Passwords are never logged or included in error messages.
 """
 
 from __future__ import annotations
@@ -24,9 +23,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-CREDS_FILE_NAMES = [".aamp_credentials"]
+from .credentials import (
+    CREDS_FILE_NAMES,
+    PROJECT_ROOT,
+    _read_creds_file,
+    get_credential_store,
+)
 
 
 @dataclass
@@ -90,21 +92,6 @@ class AampConfig:
         )
 
 
-def _read_creds_file(path: Path) -> dict[str, str]:
-    if not path.exists():
-        return {}
-    out: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        out[k.strip()] = v.strip().strip('"').strip("'")
-    return out
-
-
 def load_config(
     *,
     host: Optional[str] = None,
@@ -116,8 +103,14 @@ def load_config(
     verify_tls: Optional[bool] = None,
     require_password: bool = True,
 ) -> AampConfig:
-    """Resolve AAM Pro connection config from kwargs, env, and creds files."""
-    # Layer credentials sources — kwargs override env which overrides files.
+    """Resolve AAM Pro connection config.
+
+    Non-secret fields resolve from kwargs → env → ``.aamp_credentials``.
+    Secret fields (password, client_secret, device_default_password,
+    device_password_candidates) resolve from the credential store. Explicit
+    kwargs always take precedence — useful for tests.
+    """
+    # Layer NON-secret sources — kwargs override env which overrides files.
     file_creds: dict[str, str] = {}
     for candidate in (PROJECT_ROOT / CREDS_FILE_NAMES[0], Path.home() / CREDS_FILE_NAMES[0]):
         if candidate.exists():
@@ -132,22 +125,28 @@ def load_config(
             return env_val
         return file_creds.get(f"AAMP_{name.upper()}", default)
 
-    # Device credentials — parse optional comma-separated candidate list.
-    device_cands_raw = pick("DEVICE_PASSWORD_CANDIDATES", None, "")
-    device_candidates = [c.strip() for c in device_cands_raw.split(",") if c.strip()]
+    # Secrets via the credential store. Explicit kwargs win when provided.
+    store = get_credential_store()
+    secret_password = password if password is not None else (
+        store.get("aamp", "password") or "")
+    secret_client_secret = client_secret if client_secret is not None else (
+        store.get("aamp", "client_secret") or None)
+    secret_device_default_password = store.get("device", "default_password") or ""
+    secret_device_candidates_raw = store.get("device", "password_candidates") or ""
+    device_candidates = [c.strip() for c in secret_device_candidates_raw.split(",") if c.strip()]
 
     cfg = AampConfig(
         host=pick("HOST", host, "https://localhost"),
         iam_host=pick("IAM_HOST", None, "https://localhost:10032"),
         server_name=pick("SERVER_NAME", server_name, "") or socket.gethostname(),
         username=pick("USER", username),
-        _password=pick("PASSWORD", password),
+        _password=secret_password,
         client_id=pick("CLIENT_ID", client_id, "") or None,
-        _client_secret=pick("CLIENT_SECRET", client_secret, "") or None,
+        _client_secret=secret_client_secret,
         verify_tls=(verify_tls if verify_tls is not None
                     else pick("VERIFY_TLS", None, "false").lower() in ("1", "true", "yes")),
         device_default_user=pick("DEVICE_DEFAULT_USER", None, "root"),
-        _device_default_password=pick("DEVICE_DEFAULT_PASSWORD", None, ""),
+        _device_default_password=secret_device_default_password,
         _device_password_candidates=device_candidates,
         device_facing_host=pick("DEVICE_FACING_HOST", None, ""),
     )
@@ -159,7 +158,11 @@ def load_config(
         )
     if require_password and not cfg.password:
         raise RuntimeError(
-            "AAMP_PASSWORD is not set. Configure via environment variable "
-            "or .aamp_credentials file (chmod 600 / restrict permissions)."
+            "AAM Pro admin password is not configured. To set it without "
+            "exposing it in chat, open a TERMINAL (not chat) and run:\n"
+            "    aamp-set-credential aamp/password\n"
+            "Existing setups using AAMP_PASSWORD in .aamp_credentials still "
+            "work; run `aamp-migrate-credentials` to move the value into the "
+            "OS keyring."
         )
     return cfg

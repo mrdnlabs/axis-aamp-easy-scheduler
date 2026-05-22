@@ -408,12 +408,32 @@ async def run_repl(
     # Tool count for display
     n_tools = sum(len(t.function_declarations or []) for t in tools)
 
-    # Set up transcript logger (or null logger if disabled)
+    # Set up transcript logger (or null logger if disabled).
+    # The scrubber holds every secret value we know about and replaces any
+    # literal occurrence with a fixed-length mask before disk write. This
+    # is defense-in-depth — VAPIX errors and tool returns are already
+    # scrubbed upstream, but the transcript is the last writable copy and
+    # any future leak path that bypasses upstream layers would land here.
+    from .chat_log import Scrubber
+    from .credentials import KNOWN_SECRETS, get_credential_store
+    store = get_credential_store()
+    scrubber_values: list[str] = []
+    for s in KNOWN_SECRETS:
+        val = store.get(s.account_id, s.field)
+        if not val:
+            continue
+        if s.is_csv_list:
+            # device.password_candidates is stored as CSV — split each entry.
+            scrubber_values.extend(v.strip() for v in val.split(",") if v.strip())
+        else:
+            scrubber_values.append(val)
+    scrubber = Scrubber(scrubber_values)
+
     logger: Any
     if log_dir is None:
         logger = NullLogger()
     else:
-        logger = TranscriptLogger(log_dir)
+        logger = TranscriptLogger(log_dir, scrubber=scrubber)
         logger.log_session_start(
             model=model,
             system_prompt_path=system_prompt_path,

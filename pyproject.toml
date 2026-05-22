@@ -10,6 +10,7 @@ dependencies = [
     "httpx>=0.27",
     "google-genai>=2.5",
     "zeroconf>=0.131",
+    "keyring>=24",
 ]
 
 [project.optional-dependencies]
@@ -26,3 +27,7 @@ packages = ["src/aamp"]
 aamp-mcp = "aamp.mcp_server:main"
 aamp-describe = "aamp.cli:describe_main"
 aamp-chat = "aamp.chat:main"
+aamp-set-credential = "aamp.credentials_cli:set_main"
+aamp-list-credentials = "aamp.credentials_cli:list_main"
+aamp-delete-credential = "aamp.credentials_cli:delete_main"
+aamp-migrate-credentials = "aamp.credentials_cli:migrate_main"
