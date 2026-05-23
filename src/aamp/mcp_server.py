@@ -965,6 +965,59 @@ def _format_onboarding_result(r: "_onboard.OnboardingResult") -> list[str]:
 
 
 @mcp.tool()
+def prepare_credential_capture(account_id: str, field: str) -> str:
+    """Return the instructions the user should follow to set or update a credential.
+
+    Use this when a tool returns a "credentials not configured" error and
+    you (the LLM) need to tell the user what to do — INSTEAD of asking
+    them for the password in chat. The returned string includes the exact
+    CLI command. Relay it VERBATIM.
+
+    Today the capture happens via the terminal (``aamp-set-credential``,
+    handled by Python's ``getpass`` so nothing is echoed). When the web
+    capture UI lands later, this same tool will return a one-time URL
+    instead — callers don't change.
+
+    Args:
+        account_id: the canonical account id (e.g. ``"aamp"``, ``"device"``,
+            ``"elevenlabs"``). See KNOWN_SECRETS in src/aamp/credentials.py.
+        field: the canonical field name (e.g. ``"password"``,
+            ``"default_password"``, ``"api_key"``).
+
+    Returns:
+        A short instruction string with the literal CLI command. Includes
+        a "do NOT type the password in chat" reminder so the chat agent
+        always passes that warning through.
+
+    Examples:
+        prepare_credential_capture("device", "default_password")
+        prepare_credential_capture("aamp", "password")
+        prepare_credential_capture("elevenlabs", "api_key")
+    """
+    from .credentials import KNOWN_SECRETS, secret_for
+    s = secret_for(account_id, field)
+    if s is None:
+        # Unknown — but the CLI still accepts arbitrary slots; tell the user
+        # and list what we DO know about so the LLM can suggest a fix.
+        known = "\n".join(
+            f"  {ks.account_id}/{ks.field:<24}  {ks.description}"
+            for ks in KNOWN_SECRETS
+        )
+        return (
+            f"'{account_id}/{field}' is not a canonical credential slot.\n"
+            f"Did you mean one of these?\n{known}"
+        )
+    return (
+        f"To set the {s.description} ({s.account_id}/{s.field}) without "
+        f"exposing it in chat, open a TERMINAL and run:\n\n"
+        f"    aamp-set-credential {s.account_id}/{s.field}\n\n"
+        f"Type the value when prompted (input hidden). Then retry the "
+        f"original action. Do NOT type the password into this chat — it "
+        f"would be logged in the transcript and sent to the LLM."
+    )
+
+
+@mcp.tool()
 def onboard_axis_device(ip: str, dry_run: bool = False) -> str:
     """Run the full 4-step onboarding pipeline against one Axis audio device.
 
