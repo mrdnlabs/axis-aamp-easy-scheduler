@@ -286,6 +286,134 @@ def _summary_from_result(text: str) -> str:
     return first
 
 
+def _enum_name(v: Any) -> Optional[str]:
+    """Best-effort enum-name extraction. Gemini SDK enums expose ``.name``;
+    legacy paths sometimes hand back a raw int. Falls back to ``str(v)``
+    so something useful always reaches the transcript."""
+    if v is None:
+        return None
+    name = getattr(v, "name", None)
+    if name:
+        return str(name)
+    return str(v)
+
+
+def _safety_ratings_to_list(ratings: Any) -> list[dict[str, Any]]:
+    """Convert Gemini ``safety_ratings`` (list of objects) to a plain
+    list-of-dicts the JSON logger can serialize.
+
+    Each rating exposes ``category``, ``probability`` (LOW / MEDIUM / HIGH)
+    and ``blocked`` (bool). We capture all three so we can tell which
+    safety category fired without re-running the request.
+    """
+    out: list[dict[str, Any]] = []
+    for r in ratings or []:
+        out.append({
+            "category": _enum_name(getattr(r, "category", None)),
+            "probability": _enum_name(getattr(r, "probability", None)),
+            "blocked": bool(getattr(r, "blocked", False)),
+        })
+    return out
+
+
+def _gather_empty_response_info(response: Any, candidate: Any) -> dict[str, Any]:
+    """Pull everything potentially-diagnostic out of an empty Gemini reply.
+
+    Three independent signals worth capturing:
+
+    1. ``prompt_feedback`` — set when the **prompt** itself was blocked.
+       ``block_reason`` indicates which gate fired (``SAFETY``,
+       ``OTHER``, ``BLOCKLIST``, ``PROHIBITED_CONTENT``…), and
+       ``safety_ratings`` give per-category detail.
+    2. ``candidate.finish_reason`` + ``candidate.safety_ratings`` —
+       set when the **response** started generating then got cut off.
+       Distinct from (1).
+    3. ``candidates`` length — zero means the prompt was rejected; one
+       with empty content means the model emitted nothing.
+
+    Returns a dict shaped for JSON logging. Empty-safe; missing fields
+    just don't appear in the result.
+    """
+    info: dict[str, Any] = {
+        "candidates_count": len(response.candidates) if response.candidates else 0,
+    }
+
+    pf = getattr(response, "prompt_feedback", None)
+    if pf is not None:
+        pf_info: dict[str, Any] = {}
+        block_reason = _enum_name(getattr(pf, "block_reason", None))
+        if block_reason and block_reason not in ("BLOCK_REASON_UNSPECIFIED", "None"):
+            pf_info["block_reason"] = block_reason
+        block_msg = getattr(pf, "block_reason_message", None)
+        if block_msg:
+            pf_info["block_reason_message"] = str(block_msg)
+        ratings = _safety_ratings_to_list(getattr(pf, "safety_ratings", None))
+        if ratings:
+            pf_info["safety_ratings"] = ratings
+        if pf_info:
+            info["prompt_feedback"] = pf_info
+
+    if candidate is not None:
+        cand_info: dict[str, Any] = {}
+        fr = _enum_name(getattr(candidate, "finish_reason", None))
+        if fr:
+            cand_info["finish_reason"] = fr
+        fm = getattr(candidate, "finish_message", None)
+        if fm:
+            cand_info["finish_message"] = str(fm)
+        ratings = _safety_ratings_to_list(getattr(candidate, "safety_ratings", None))
+        if ratings:
+            cand_info["safety_ratings"] = ratings
+        content = getattr(candidate, "content", None)
+        cand_info["had_content"] = bool(content)
+        cand_info["parts_count"] = len(content.parts) if content and content.parts else 0
+        info["candidate"] = cand_info
+
+    return info
+
+
+def _format_empty_response_message(empty_info: dict[str, Any]) -> str:
+    """Turn the diagnostic dict into one Markdown line for the chat.
+
+    The verbose JSON goes to the transcript; users see a short
+    explanation. Three branches mirror the three blocking modes:
+    prompt-side, response-side, or "Gemini just sent nothing".
+    """
+    pf = empty_info.get("prompt_feedback") or {}
+    cand = empty_info.get("candidate") or {}
+
+    if pf.get("block_reason"):
+        blocked = [
+            r["category"] for r in pf.get("safety_ratings", [])
+            if r.get("blocked")
+        ]
+        suffix = f" (categories: {', '.join(blocked)})" if blocked else ""
+        return (
+            f"_The prompt was blocked by Gemini's safety filter — "
+            f"`block_reason: {pf['block_reason']}`{suffix}. "
+            f"See the transcript for full per-category ratings._"
+        )
+
+    if cand.get("finish_reason") == "SAFETY":
+        blocked = [
+            r["category"] for r in cand.get("safety_ratings", [])
+            if r.get("blocked")
+        ]
+        suffix = f" (categories: {', '.join(blocked)})" if blocked else ""
+        return (
+            f"_The response was blocked by Gemini's safety filter "
+            f"mid-generation{suffix}. See the transcript for full per-"
+            f"category ratings._"
+        )
+
+    fr = cand.get("finish_reason") or "unknown"
+    return (
+        f"_Gemini returned no output (finish_reason: {fr}). This sometimes "
+        f"happens on very short prompts against a large tool list — try a "
+        f"more specific request. Diagnostic detail in the transcript._"
+    )
+
+
 # ---------------------------------------------------------------------------
 # /chat/message — primary endpoint
 # ---------------------------------------------------------------------------
@@ -453,12 +581,20 @@ async def _run_turn(req: ChatRequest):
                 else None
             )
             if not candidate or not candidate.content or not candidate.content.parts:
-                # Nothing returned — bail with a hint.
-                yield _sse("part", {
-                    "kind": "text",
-                    "body": f"_(no response — finish_reason: {finish_reason or 'unknown'})_",
+                # Nothing came back. Capture enough diagnostic detail in the
+                # transcript that the next time this happens we can tell
+                # exactly which branch fired: prompt-side safety block,
+                # response-side safety block, or just a Gemini empty
+                # response on a huge prefix + tiny user message.
+                empty_info = _gather_empty_response_info(response, candidate)
+                empty_info["round"] = round_idx + 1
+                log.write("assistant_empty", **empty_info)
+                user_msg = _format_empty_response_message(empty_info)
+                yield _sse("part", {"kind": "text", "body": user_msg})
+                yield _sse("done", {
+                    "finish_reason": finish_reason or "EMPTY",
+                    "empty_info": empty_info,
                 })
-                yield _sse("done", {"finish_reason": finish_reason or "EMPTY"})
                 return
 
             # Split the response into text chunks + function calls.
