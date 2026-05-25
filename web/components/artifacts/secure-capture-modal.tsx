@@ -135,7 +135,15 @@ export function SecureCaptureModal({
     };
   }, [open, credentialKey, tokenProp, descOverride]);
 
-  const strong = pwd.length >= 12 && /[A-Z]/.test(pwd) && /[0-9]/.test(pwd);
+  // Field-name heuristic: ``api_key`` / ``..._key`` / ``..._token`` slots
+  // are non-human random strings — the password-strength meter and weak-
+  // password warning are nonsensical for them. We swap copy ("API key"
+  // vs "Password") and skip strength UI in that branch.
+  const looksLikeKey = isApiKeyField(slot?.field, credentialKey);
+  const secretNoun = looksLikeKey ? "API key" : "Password";
+  const strong = looksLikeKey
+    ? true
+    : pwd.length >= 12 && /[A-Z]/.test(pwd) && /[0-9]/.test(pwd);
   // Server-side validation enforces >= 4 chars (capture.MIN_VALUE_LENGTH).
   // We mirror that floor here so the button isn't enabled for values the
   // server will reject. Anything 4+ chars that matches can submit; weak
@@ -308,9 +316,12 @@ export function SecureCaptureModal({
 
             {phase === "input" && (
               <>
-                <FieldLabel>Password</FieldLabel>
+                <FieldLabel>{secretNoun}</FieldLabel>
                 <SecureInput ref={inputRef} value={pwd} onChange={setPwd} />
-                <PwdStrength value={pwd} />
+                {/* Strength meter applies to human-typed passwords only.
+                    Random API keys are by definition high-entropy and the
+                    meter would only mislead. */}
+                {!looksLikeKey && <PwdStrength value={pwd} />}
 
                 <div className="mt-3">
                   <FieldLabel>Confirm</FieldLabel>
@@ -573,4 +584,28 @@ function parseCredentialKey(key: string): { account_id: string; field: string } 
   const ix = key.indexOf("/");
   if (ix < 0) return { account_id: key, field: "" };
   return { account_id: key.slice(0, ix), field: key.slice(ix + 1) };
+}
+
+/**
+ * Heuristic: does this credential slot hold an API key / token rather
+ * than a human-typed password? Drives copy ("API key" vs "Password")
+ * and whether to show the password-strength meter.
+ *
+ * Accepts both the parsed slot field (from the server, e.g.
+ * ``"api_key"``) and the raw composed key (e.g. ``"gemini/api_key"``)
+ * so we get a sensible answer before the token-mint round-trip
+ * completes too.
+ */
+function isApiKeyField(field?: string, composedKey?: string): boolean {
+  const candidates = [field ?? "", parseCredentialKey(composedKey ?? "").field];
+  return candidates.some((f) => {
+    const lower = f.toLowerCase();
+    return (
+      lower === "api_key" ||
+      lower.endsWith("_api_key") ||
+      lower.endsWith("_key") ||
+      lower.endsWith("_token") ||
+      lower === "token"
+    );
+  });
 }
