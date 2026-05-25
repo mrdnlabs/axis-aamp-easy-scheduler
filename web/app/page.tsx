@@ -38,13 +38,12 @@ export default function HomePage() {
       "anything.",
   );
 
-  // Server-reported credential rollup. Until the first fetch resolves
-  // we treat the composer as disabled (better than letting the user
-  // type and then erroring on send).
+  // Server-reported credential rollup. When the Gemini key is missing
+  // we hide the chat workspace entirely and show a centered setup view
+  // — see the render block below.
   const { status: configStatus, isLoading: configLoading, refresh: refreshConfig } =
     useConfigStatus();
   const geminiReady = configStatus?.gemini_configured ?? false;
-  const composerDisabled = !geminiReady;
 
   // Artifact pane state. ``null`` means the pane is closed.
   const [artifact, setArtifact] = React.useState<{
@@ -79,17 +78,37 @@ export default function HomePage() {
       <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* Chat column */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+          {/* Setup gate — when the server reports no Gemini key we REPLACE
+              the chat workspace with a centered setup view. Welcome
+              message, message log, and composer are all hidden so the
+              key-setup card is unmissable.
+
+              Render-state matrix:
+                configLoading        → tiny spinner (sub-100ms typically)
+                !configLoading & !geminiReady → hero setup card
+                geminiReady          → full chat workspace */}
+          {configLoading ? (
+            <div className="flex-1 flex items-center justify-center text-13 text-slate-500">
+              <span className="inline-flex items-center gap-2">
+                <span className="block w-3.5 h-3.5 rounded-full border-[1.5px] border-accent border-t-transparent animate-spin" />
+                Checking configuration…
+              </span>
+            </div>
+          ) : !geminiReady ? (
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              <div className="min-h-full flex items-center justify-center px-6 py-12">
+                <div className="w-full max-w-[640px]">
+                  <GeminiSetupCard
+                    onSetUp={() => setCapture({ credentialKey: "gemini/api_key" })}
+                    size="hero"
+                  />
+                </div>
+              </div>
+            </div>
+          ) : (
+          <>
           <main ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
             <div className="w-full max-w-[820px] mx-auto px-6 pt-6 pb-4">
-              {/* Setup gate — shown until the server reports a Gemini key.
-                  Renders ABOVE the welcome message so the user can't
-                  miss it. The composer below is disabled in parallel. */}
-              {!configLoading && !geminiReady && (
-                <GeminiSetupCard
-                  onSetUp={() => setCapture({ credentialKey: "gemini/api_key" })}
-                />
-              )}
-
               {messages.map((m) => (
                 <MessageRow
                   key={m.id}
@@ -148,7 +167,9 @@ export default function HomePage() {
             </div>
           </main>
 
-          {/* Composer — pinned to the bottom of the chat column. */}
+          {/* Composer — pinned to the bottom of the chat column.
+              Only rendered once Gemini is configured; the setup view
+              above stands in for it otherwise. */}
           <div className="shrink-0 border-t border-slate-200 bg-surface">
             <Composer
               contextChips={["Lincoln MS", "This week", "12 devices · 4 zones"]}
@@ -158,14 +179,10 @@ export default function HomePage() {
                 "Onboard the new speaker at 192.168.1.123",
               ]}
               onSend={(text) => void send(text)}
-              disabled={composerDisabled}
-              disabledReason={
-                configLoading
-                  ? "Checking server configuration…"
-                  : "Set up the Gemini API key above to start chatting."
-              }
             />
           </div>
+          </>
+          )}
         </div>
 
         {/* Artifact pane — opens on demand. Data comes from the
