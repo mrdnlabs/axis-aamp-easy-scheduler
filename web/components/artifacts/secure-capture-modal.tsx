@@ -72,7 +72,7 @@ export function SecureCaptureModal({
     description: string;
     expires_in_seconds: number;
   } | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<{ status?: number; detail: string } | null>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
 
   // On open: mint a token (or fetch one if provided), then transition to input.
@@ -117,7 +117,11 @@ export function SecureCaptureModal({
       } catch (e) {
         if (cancelled) return;
         setPhase("error");
-        setError(e instanceof ApiError ? e.detail : String(e));
+        setError(
+          e instanceof ApiError
+            ? { status: e.status, detail: e.detail }
+            : { detail: String(e) },
+        );
       }
     })();
 
@@ -256,10 +260,20 @@ export function SecureCaptureModal({
               <div className="flex gap-3 items-start px-4 py-3.5 bg-critical-soft border border-critical/30 rounded-3">
                 <AlertCircle size={18} strokeWidth={2} className="text-critical shrink-0 mt-0.5" />
                 <div className="flex-1">
-                  <div className="text-13 font-semibold text-critical">Capture failed</div>
+                  <div className="text-13 font-semibold text-critical">
+                    Capture failed
+                    {error?.status !== undefined && (
+                      <span className="mono ml-2 text-12 font-medium text-slate-500">
+                        HTTP {error.status}
+                      </span>
+                    )}
+                  </div>
                   <div className="text-[12.5px] text-slate-700 mt-0.5">
-                    {error ?? "Unknown error."} Use the terminal fallback below, or
-                    close and retry.
+                    {error?.detail ?? "Unknown error."}
+                  </div>
+                  <div className="text-[12.5px] text-slate-500 mt-2 leading-relaxed">
+                    {errorHint(error)} Use the terminal fallback below, or close
+                    and retry.
                   </div>
                 </div>
               </div>
@@ -474,6 +488,28 @@ function formatExpiry(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/**
+ * Translate an ApiError into a one-sentence hint for the user.
+ *
+ * The most common failure in dev is "backend not running" — the Next.js
+ * dev server rewrites /api/credential-capture/* to localhost:7331, and if
+ * nothing's listening there the rewrite produces a 5xx with a vague body.
+ * Surface that case clearly.
+ */
+function errorHint(err: { status?: number; detail: string } | null): string {
+  if (!err) return "";
+  if (err.status === undefined || err.status === 0) {
+    return "Looks like the backend isn't reachable. Start it with `aamp-server` in a terminal, then retry.";
+  }
+  if (err.status === 404) {
+    return "The capture endpoint returned 404. The Python sidecar may be running with stale code — restart `aamp-server`.";
+  }
+  if (err.status >= 500) {
+    return "The Python sidecar hit an internal error. Check its terminal log for a traceback, or restart it.";
+  }
+  return "";
 }
 
 /** Split ``"device/default_password"`` into ``{account_id, field}``. */
