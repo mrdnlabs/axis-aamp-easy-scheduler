@@ -12,6 +12,15 @@ interface ComposerProps {
   suggestions?: string[];
   /** Send callback. */
   onSend?: (text: string) => void;
+  /**
+   * When true, the composer is non-interactive — textarea, buttons,
+   * and suggestion chips are all disabled. Use ``disabledReason`` to
+   * tell the user why (rendered in the footer in place of the usual
+   * helper text).
+   */
+  disabled?: boolean;
+  /** One-line explanation shown in the footer when ``disabled`` is set. */
+  disabledReason?: string;
 }
 
 /**
@@ -33,11 +42,14 @@ export function Composer({
   contextChips = [],
   suggestions = [],
   onSend,
+  disabled = false,
+  disabledReason,
 }: ComposerProps) {
   const [value, setValue] = React.useState("");
   const taRef = React.useRef<HTMLTextAreaElement | null>(null);
 
   function handleSend() {
+    if (disabled) return;
     const text = value.trim();
     if (!text) return;
     onSend?.(text);
@@ -45,6 +57,7 @@ export function Composer({
   }
 
   function handleKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (disabled) return;
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       handleSend();
@@ -53,8 +66,10 @@ export function Composer({
 
   return (
     <div className="w-full max-w-[820px] mx-auto px-6 pb-6 pt-2">
-      {/* Suggestion strip — visible only when textarea is empty */}
-      {!value && suggestions.length > 0 && (
+      {/* Suggestion strip — visible only when textarea is empty AND
+          the composer is interactive. Hidden when disabled so the
+          user isn't tempted to click chips that go nowhere. */}
+      {!value && !disabled && suggestions.length > 0 && (
         <div className="flex gap-2 mb-2.5 overflow-x-auto pb-1 -mx-1 px-1">
           {suggestions.map((s) => (
             <button
@@ -74,7 +89,12 @@ export function Composer({
         </div>
       )}
 
-      <div className="bg-card border border-slate-200 rounded-3 shadow-2 overflow-hidden">
+      <div
+        className={cn(
+          "bg-card border border-slate-200 rounded-3 shadow-2 overflow-hidden",
+          disabled && "opacity-70",
+        )}
+      >
         {/* Context header */}
         <div
           className={cn(
@@ -99,7 +119,14 @@ export function Composer({
             ))}
           </div>
           <div className="flex-1" />
-          <button className="text-11 tracking-normal text-accent hover:text-accent-700 normal-case font-medium">
+          <button
+            disabled={disabled}
+            className={cn(
+              "text-11 tracking-normal normal-case font-medium",
+              "text-accent hover:text-accent-700",
+              "disabled:text-slate-400 disabled:hover:text-slate-400 disabled:cursor-not-allowed",
+            )}
+          >
             Adjust
           </button>
         </div>
@@ -110,12 +137,18 @@ export function Composer({
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKey}
-          placeholder="Describe what you want — e.g. ‘Move next Wednesday’s schedule 30 minutes later for the assembly.’"
+          disabled={disabled}
+          placeholder={
+            disabled
+              ? "Composer locked — finish setup above to start chatting."
+              : "Describe what you want — e.g. ‘Move next Wednesday’s schedule 30 minutes later for the assembly.’"
+          }
           rows={3}
           className={cn(
             "block w-full resize-none border-0 px-4 py-3.5",
             "font-ui text-[15px] leading-[1.5] text-ink placeholder:text-slate-400",
             "focus:outline-none bg-card",
+            "disabled:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-500",
           )}
         />
 
@@ -126,20 +159,22 @@ export function Composer({
             "border-t border-slate-100",
           )}
         >
-          <IconButton aria-label="Attach file" size={30}>
+          <IconButton aria-label="Attach file" size={30} disabled={disabled}>
             <Paperclip size={15} strokeWidth={1.8} />
           </IconButton>
-          <IconButton aria-label="Quick command" size={30}>
+          <IconButton aria-label="Quick command" size={30} disabled={disabled}>
             <CommandIcon size={15} strokeWidth={1.8} />
           </IconButton>
-          <span className="text-12 text-slate-500">
-            Changes confirm before apply · passwords never enter chat.
+          <span className="text-12 text-slate-500 truncate">
+            {disabled
+              ? disabledReason ?? "Composer locked."
+              : "Changes confirm before apply · passwords never enter chat."}
           </span>
           <div className="flex-1" />
           <span className="hidden sm:inline text-11 text-slate-400 mono">⌘ ↵ to send</span>
           <Button
             onClick={handleSend}
-            disabled={!value.trim()}
+            disabled={disabled || !value.trim()}
             iconRight={<ArrowUp size={14} strokeWidth={1.8} />}
             size="md"
           >

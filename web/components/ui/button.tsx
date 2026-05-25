@@ -110,6 +110,7 @@ export const IconButton = React.forwardRef<
         ? "bg-accent-soft text-accent-700"
         : "hover:bg-slate-100",
       "focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2",
+      "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent",
       className,
     )}
     style={{ width: size, height: size }}

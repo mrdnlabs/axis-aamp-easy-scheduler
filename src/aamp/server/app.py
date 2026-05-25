@@ -21,7 +21,7 @@ import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import capture, chat
+from . import capture, chat, config_status
 
 
 # Origin of the Next.js dev server. CORS is restrictive — only this origin
@@ -51,6 +51,7 @@ def create_app() -> FastAPI:
     # (next.config.js: /api/credential-capture/* -> :7331) lines up.
     app.include_router(capture.router, prefix="/api")
     app.include_router(chat.router, prefix="/api")
+    app.include_router(config_status.router, prefix="/api")
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:

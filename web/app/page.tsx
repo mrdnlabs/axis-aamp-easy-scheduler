@@ -10,7 +10,9 @@ import { DayTemplateArtifact } from "@/components/artifacts/day-template-artifac
 import { OnboardingArtifact } from "@/components/artifacts/onboarding-artifact";
 import { DiscoveryArtifact } from "@/components/artifacts/discovery-artifact";
 import { SecureCaptureModal } from "@/components/artifacts/secure-capture-modal";
+import { GeminiSetupCard } from "@/components/setup/gemini-setup-card";
 import { useChat, artifactStoreKey } from "@/lib/use-chat";
+import { useConfigStatus } from "@/lib/use-config-status";
 import type { ArtifactKind } from "@/lib/types";
 
 /**
@@ -35,6 +37,14 @@ export default function HomePage() {
       "or ask me about your devices. I'll show you the diff before I apply " +
       "anything.",
   );
+
+  // Server-reported credential rollup. Until the first fetch resolves
+  // we treat the composer as disabled (better than letting the user
+  // type and then erroring on send).
+  const { status: configStatus, isLoading: configLoading, refresh: refreshConfig } =
+    useConfigStatus();
+  const geminiReady = configStatus?.gemini_configured ?? false;
+  const composerDisabled = !geminiReady;
 
   // Artifact pane state. ``null`` means the pane is closed.
   const [artifact, setArtifact] = React.useState<{
@@ -71,6 +81,15 @@ export default function HomePage() {
         <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
           <main ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
             <div className="w-full max-w-[820px] mx-auto px-6 pt-6 pb-4">
+              {/* Setup gate — shown until the server reports a Gemini key.
+                  Renders ABOVE the welcome message so the user can't
+                  miss it. The composer below is disabled in parallel. */}
+              {!configLoading && !geminiReady && (
+                <GeminiSetupCard
+                  onSetUp={() => setCapture({ credentialKey: "gemini/api_key" })}
+                />
+              )}
+
               {messages.map((m) => (
                 <MessageRow
                   key={m.id}
@@ -139,6 +158,12 @@ export default function HomePage() {
                 "Onboard the new speaker at 192.168.1.123",
               ]}
               onSend={(text) => void send(text)}
+              disabled={composerDisabled}
+              disabledReason={
+                configLoading
+                  ? "Checking server configuration…"
+                  : "Set up the Gemini API key above to start chatting."
+              }
             />
           </div>
         </div>
@@ -197,10 +222,13 @@ export default function HomePage() {
           if (!open) setCapture(null);
         }}
         credentialKey={capture?.credentialKey}
-        onCaptured={() => {
+        onCaptured={(info) => {
           // The next chat send will pick the new value up from the
-          // server's credential store; nothing client-side to do.
+          // server's credential store. We also refresh the config
+          // status so the setup card disappears and the composer
+          // un-gates — particularly important for ``gemini/api_key``.
           setCapture(null);
+          if (info.account_id === "gemini") void refreshConfig();
         }}
       />
     </div>

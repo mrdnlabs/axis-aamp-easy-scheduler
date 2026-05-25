@@ -11,6 +11,33 @@
  */
 
 // ---------------------------------------------------------------------------
+// Config status
+// ---------------------------------------------------------------------------
+
+/**
+ * Boolean rollup of credential / capability state.
+ *
+ * The frontend uses ``gemini_configured`` to gate the composer — chat
+ * cannot run without a Gemini API key. The other booleans inform softer
+ * UX cues (e.g. dim voice features when ElevenLabs isn't set).
+ *
+ * Only booleans cross the wire — no values, no last-set timestamps.
+ */
+export interface ConfigStatus {
+  gemini_configured: boolean;
+  elevenlabs_configured: boolean;
+  aamp_configured: boolean;
+  device_default_password_configured: boolean;
+}
+
+/** Fetch the credential rollup. Safe to call repeatedly. */
+export async function getConfigStatus(): Promise<ConfigStatus> {
+  const r = await fetch("/api/config/status");
+  if (!r.ok) throw await apiError(r);
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
 // Credential capture
 // ---------------------------------------------------------------------------
 

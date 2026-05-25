@@ -175,7 +175,11 @@ export function SecureCaptureModal({
       }, 1400);
     } catch (e) {
       setPhase("error");
-      setError(e instanceof ApiError ? e.detail : String(e));
+      setError(
+        e instanceof ApiError
+          ? { status: e.status, detail: e.detail }
+          : { detail: String(e) },
+      );
     }
   }
 

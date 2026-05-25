@@ -17,6 +17,7 @@ const nextConfig = {
     //   /api/credential-capture/{token}        — POST: submit value (single-use)
     //   /api/chat/message                     — POST: enqueue a chat message
     //   /api/chat/{session_id}/stream         — GET: SSE message-parts stream
+    //   /api/config/status                    — GET: credential rollup
     return [
       {
         source: "/api/credential-capture/:path*",
@@ -25,6 +26,10 @@ const nextConfig = {
       {
         source: "/api/chat/:path*",
         destination: "http://127.0.0.1:7331/api/chat/:path*",
+      },
+      {
+        source: "/api/config/:path*",
+        destination: "http://127.0.0.1:7331/api/config/:path*",
       },
     ];
   },
