@@ -1,6 +1,8 @@
-# AampEasyScheduler
+# AampEasyScheduler (ChAAMP)
 
-A natural-language scheduler for [AXIS Audio Manager Pro](https://www.axis.com/products/axis-audio-manager-pro). Lets administrators describe bell schedules (or any scheduled audio) in plain English and have them applied directly to AAM Pro — typically over a chat interface like Claude Code or any MCP-compatible client. Also handles end-to-end onboarding of Axis network audio devices: discover them on the LAN, install the AAM Pro ACAP, point them at the server.
+> The codename for the user-facing product is **ChAAMP** — *Chat with AXIS Audio Manager Pro*. The repository name `AampEasyScheduler` is the original project name and remains in places where it's part of the package / module identity (`aamp-easy-scheduler`, `aamp.*` Python modules, `aamp-*` CLI commands). New surfaces ship under the ChAAMP name.
+
+A natural-language scheduler for [AXIS Audio Manager Pro](https://www.axis.com/products/axis-audio-manager-pro). Lets administrators describe bell schedules (or any scheduled audio) in plain English and have them applied directly to AAM Pro — typically over a chat interface like Claude Code, the upcoming ChAAMP web app, or any MCP-compatible client. Also handles end-to-end onboarding of Axis network audio devices: discover them on the LAN, install the AAM Pro ACAP, point them at the server.
 
 > Primary use case: K-12 school bell schedules. Also works for offices, retail, hospitals, transportation hubs, and other PA-system deployments.
 
@@ -81,6 +83,8 @@ Requires a `GEMINI_API_KEY` environment variable. The chat reads `src/aamp/syste
 | `tests/` | Smoke tests and verification scripts (live tests; need a real AAM Pro install). |
 | `tools/` | Dev utilities: traffic observer, API prober, asset downloader. |
 | `scripts/` | Hardware-verification scripts used during the Axis-device onboarding work. ⚠️ **These contain hardcoded test credentials** — for local LAN testing only. |
+| `web/` | The ChAAMP web client (Next.js + Tailwind + Radix). See `web/README.md` for the setup steps. Implements the design documented in `docs/design/DESIGN_SYSTEM.md`. |
+| `docs/design/` | Design brief, per-screen specs, the Claude Design prompt, and the canonical design system reference. |
 
 ## Key capabilities
 

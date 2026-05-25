@@ -7,6 +7,11 @@
 .venv/
 .claude/settings.local.json
 
+# Design handoff bundles from Claude Design — kept local for reference but
+# never committed. Canonical design system lives in docs/design/ + the
+# implementation under web/.
+web/design-handoff/
+
 # Generated
 logs/
 intent/site_*.md

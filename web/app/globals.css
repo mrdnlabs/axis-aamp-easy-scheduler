@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+   ChAAMP base styles
+   See docs/design/DESIGN_SYSTEM.md for the canonical token reference.
+   --------------------------------------------------------------------------- */
+
+@layer base {
+  html, body {
+    @apply m-0 p-0;
+  }
+  body {
+    @apply font-ui bg-surface text-ink antialiased;
+    font-size: 14px;
+    /* Slightly more geometric digits — Inter character variants */
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+  }
+
+  /* Tabular numerals for time / counts / IPs */
+  .tnum, .mono {
+    font-feature-settings: 'tnum' 1;
+  }
+  .mono {
+    @apply font-mono;
+  }
+
+  /* Subtle time-axis motif — hairlines + tick marks. Used as section dividers
+     and accent rails. Apply via `.time-axis` on a fixed-height container. */
+  .time-axis {
+    height: 8px;
+    background-image:
+      linear-gradient(90deg, theme('colors.slate.200') 1px, transparent 1px),
+      linear-gradient(90deg, theme('colors.slate.300') 1px, transparent 1px);
+    background-size: 12px 8px, 96px 8px;
+    background-position: 0 4px, 0 4px;
+    background-repeat: repeat-x;
+    opacity: 0.8;
+  }
+
+  /* Scrollbar — subtle, doesn't fight the warm-neutral palette */
+  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  *::-webkit-scrollbar-thumb {
+    background: theme('colors.slate.200');
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: theme('colors.slate.300');
+    background-clip: padding-box;
+    border: 2px solid transparent;
+  }
+  *::-webkit-scrollbar-track { background: transparent; }
+
+  /* Selection — accent-soft + accent-700, never the harsh default */
+  ::selection {
+    background: theme('colors.accent.soft');
+    color: theme('colors.accent.700');
+  }
+
+  /* Visible focus ring */
+  :focus-visible {
+    outline: 2px solid theme('colors.accent.DEFAULT');
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
