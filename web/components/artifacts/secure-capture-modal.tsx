@@ -73,6 +73,10 @@ export function SecureCaptureModal({
     expires_in_seconds: number;
   } | null>(null);
   const [error, setError] = React.useState<{ status?: number; detail: string } | null>(null);
+  // When the password doesn't meet the recommended strength, clicking
+  // "Capture and store" shows an inline confirmation rather than blocking
+  // outright. Two clicks for weak passwords; one click for strong.
+  const [confirmingWeak, setConfirmingWeak] = React.useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
 
   // On open: mint a token (or fetch one if provided), then transition to input.
@@ -83,6 +87,7 @@ export function SecureCaptureModal({
     setPwd("");
     setPwd2("");
     setError(null);
+    setConfirmingWeak(false);
 
     (async () => {
       try {
@@ -131,12 +136,30 @@ export function SecureCaptureModal({
   }, [open, credentialKey, tokenProp, descOverride]);
 
   const strong = pwd.length >= 12 && /[A-Z]/.test(pwd) && /[0-9]/.test(pwd);
-  const matches = pwd.length > 0 && pwd === pwd2;
-  const canSubmit = strong && matches && phase === "input";
+  // Server-side validation enforces >= 4 chars (capture.MIN_VALUE_LENGTH).
+  // We mirror that floor here so the button isn't enabled for values the
+  // server will reject. Anything 4+ chars that matches can submit; weak
+  // values trigger the confirmation dialog first.
+  const matches = pwd.length >= 4 && pwd === pwd2;
+  const canSubmit = matches && phase === "input";
 
   const cli = `aamp-set-credential ${
     slot ? `${slot.account_id}/${slot.field}` : credentialKey ?? ""
   }`;
+
+  /**
+   * Click handler for the primary submit button. If the password is
+   * strong (or the user has already confirmed they want to proceed with
+   * a weak one), submit directly. Otherwise show the inline warning
+   * and wait for the user's explicit "Save anyway".
+   */
+  function handlePrimaryClick() {
+    if (strong || confirmingWeak) {
+      void submit();
+    } else {
+      setConfirmingWeak(true);
+    }
+  }
 
   async function submit() {
     if (!token) return;
@@ -294,18 +317,47 @@ export function SecureCaptureModal({
                   />
                 </div>
 
+                {/* Inline confirm prompt for weak passwords */}
+                {confirmingWeak && !strong && (
+                  <div className="mt-3 flex gap-3 items-start px-3.5 py-3 bg-warning-soft border border-warning/30 rounded-2">
+                    <AlertCircle size={16} strokeWidth={2} className="text-warning shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <div className="text-13 font-semibold text-warning">
+                        This password is below recommended strength.
+                      </div>
+                      <div className="text-[12.5px] text-slate-700 mt-0.5 leading-relaxed">
+                        Strong passwords use 12+ characters with mixed case and a
+                        digit. Axis devices often accept weaker values, so we
+                        let you proceed — but production fleets should use
+                        stronger ones.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex items-center justify-between pt-3 mt-1 gap-2">
-                  <Button variant="ghost" size="md" onClick={() => onOpenChange(false)}>
-                    Cancel
+                  <Button
+                    variant="ghost"
+                    size="md"
+                    onClick={() => {
+                      if (confirmingWeak) {
+                        // Back out of the warning without closing the modal.
+                        setConfirmingWeak(false);
+                      } else {
+                        onOpenChange(false);
+                      }
+                    }}
+                  >
+                    {confirmingWeak ? "Back" : "Cancel"}
                   </Button>
                   <Button
                     variant="primary"
                     size="md"
-                    onClick={submit}
+                    onClick={handlePrimaryClick}
                     disabled={!canSubmit}
                     iconLeft={<Lock size={14} strokeWidth={1.9} />}
                   >
-                    Capture and store
+                    {confirmingWeak && !strong ? "Save anyway" : "Capture and store"}
                   </Button>
                 </div>
               </>
