@@ -964,6 +964,165 @@ def _format_onboarding_result(r: "_onboard.OnboardingResult") -> list[str]:
     return lines
 
 
+# ---------------------------------------------------------------------------
+# Staging — apply-confirm-commit workflow for schedule changes
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def stage_schedule_change(
+    title: str,
+    effective: str,
+    operations: list[dict[str, Any]],
+    summary: str = "",
+) -> str:
+    """Stage a set of schedule changes for the user to review BEFORE applying.
+
+    Use this for ANY mutation of AAM Pro state that the user has described
+    in chat. The user sees a per-change diff (rendered as a ScheduleDiffCard
+    in the web UI) and either confirms with ``apply`` or drops with
+    ``discard``. ``apply`` invokes ``apply_staged_changes(staging_id)`` to
+    commit; ``discard`` invokes ``discard_staged_changes(staging_id)``.
+
+    Args:
+        title: Short label for the diff card header (e.g.
+            ``"Late-start Wednesdays"``).
+        effective: Plain-language effective-date range
+            (e.g. ``"May 27 to June 11"``).
+        operations: List of operation objects. Each operation is a dict
+            whose ``kind`` field selects the schema. Supported kinds:
+
+            - ``{"kind": "create_event", "template_id": ..., "destination_id": ...,
+                "label": ..., "start_time": "<ISO>", "detail": ...,
+                "destination_name": ...}``
+            - ``{"kind": "delete_event", "scheduler_id": ..., "label": ...,
+                "detail": ...}``
+            - ``{"kind": "schedule_template", "template_id": ...,
+                "destination_id": ..., "days_of_week": [...],
+                "start_date": "...", "end_date": "...", "label": ...,
+                "detail": ..., "destination_name": ...}``
+            - ``{"kind": "cancel_one_occurrence", "template_id": ...,
+                "destination_id": ..., "exception_date": "YYYY-MM-DD",
+                "label": ..., "detail": ...}``
+        summary: Optional one-line summary used by the ApplyConfirmCard.
+
+    Returns:
+        JSON describing the staged change: ``{staging_id, title,
+        effective, changes: [...]}``. The chat-side UI renders this as a
+        ScheduleDiffCard. Pass the ``staging_id`` to
+        ``apply_staged_changes`` when the user confirms.
+    """
+    import json as _json
+    from pydantic import TypeAdapter, ValidationError
+    from . import staging as _staging
+    try:
+        ops = TypeAdapter(list[_staging.Operation]).validate_python(operations)
+    except ValidationError as e:
+        return f"Failed to validate operations: {e}"
+    try:
+        cs = _staging.stage(title=title, effective=effective,
+                             operations=ops, summary=summary)
+    except ValueError as e:
+        return f"Cannot stage: {e}"
+    return _json.dumps(cs.to_diff_card(), indent=2)
+
+
+@mcp.tool()
+def apply_staged_changes(staging_id: str) -> str:
+    """Commit a previously-staged change set to AAM Pro.
+
+    Pops the staging set from the registry, runs each operation through
+    the existing write tools, and returns a per-operation success/failure
+    summary. Single-use: re-running with the same ``staging_id`` returns
+    a "not found" error.
+
+    Args:
+        staging_id: The ``staging_id`` returned by ``stage_schedule_change``.
+
+    Returns:
+        Markdown summary of which operations succeeded and which failed.
+        If any operation fails, subsequent operations still run — the
+        report makes failures actionable rather than abandoning a batch.
+    """
+    from . import staging as _staging
+    cs = _staging.pop(staging_id)
+    if cs is None:
+        return f"No staged change with id {staging_id!r} (expired or already applied/discarded)."
+    return _apply_changeset(cs)
+
+
+@mcp.tool()
+def discard_staged_changes(staging_id: str) -> str:
+    """Drop a staged change set without applying it.
+
+    Args:
+        staging_id: The ``staging_id`` to discard.
+
+    Returns:
+        Confirmation string.
+    """
+    from . import staging as _staging
+    cs = _staging.pop(staging_id)
+    if cs is None:
+        return f"No staged change with id {staging_id!r} (expired or already applied/discarded)."
+    return (
+        f"Discarded staged change {staging_id!r}: {cs.title} ({len(cs.operations)} operation(s)). "
+        f"Nothing was written to AAM Pro."
+    )
+
+
+def _apply_changeset(cs) -> str:
+    """Dispatch every operation in ``cs`` through the existing write tools.
+
+    Each operation calls the same function the LLM would have called
+    directly. Failures are caught per-operation so the rest of the batch
+    still runs; the result string lists each outcome.
+    """
+    from . import staging as _staging
+    lines = [f"# Applied {len(cs.operations)} change(s) — {cs.title}", ""]
+    failures = 0
+    for i, op in enumerate(cs.operations, 1):
+        try:
+            if isinstance(op, _staging.CreateEventOp):
+                # The existing create_event tool takes string args; pass
+                # through. We deliberately don't try to be clever about
+                # signature mapping — each branch is explicit so a typo
+                # surfaces as a typing error here, not a runtime one in
+                # AAM Pro.
+                detail = create_event(  # type: ignore[name-defined]
+                    template_id=op.template_id,
+                    destination_id=op.destination_id,
+                    start_time=op.start_time,
+                )
+            elif isinstance(op, _staging.DeleteEventOp):
+                detail = delete_event(scheduler_id=op.scheduler_id)  # type: ignore[name-defined]
+            elif isinstance(op, _staging.ScheduleTemplateOp):
+                detail = schedule_template(  # type: ignore[name-defined]
+                    template_id=op.template_id,
+                    destination_id=op.destination_id,
+                    days_of_week=op.days_of_week,
+                    start_date=op.start_date,
+                    end_date=op.end_date,
+                )
+            elif isinstance(op, _staging.CancelOccurrenceOp):
+                detail = cancel_one_occurrence(  # type: ignore[name-defined]
+                    template_id=op.template_id,
+                    destination_id=op.destination_id,
+                    exception_date=op.exception_date,
+                )
+            else:
+                detail = f"unknown operation kind: {op!r}"
+            lines.append(f"- ✓ **{op.label}** — {detail}")
+        except Exception as e:
+            failures += 1
+            lines.append(f"- ✗ **{op.label}** — failed: {type(e).__name__}: {e}")
+    lines.append("")
+    if failures:
+        lines.append(f"**{failures} of {len(cs.operations)} operation(s) failed.** Other operations succeeded.")
+    else:
+        lines.append("All operations applied successfully.")
+    return "\n".join(lines)
+
+
 @mcp.tool()
 def list_credentials() -> str:
     """List every credential currently stored — VALUES NEVER RETURNED.

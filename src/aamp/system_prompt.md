@@ -130,6 +130,31 @@ Passwords, API keys, and access tokens are stored OS-natively (Windows Credentia
   - `device/default_password`, `device/password_candidates` — Axis devices
   - `elevenlabs/api_key` — ElevenLabs voice
 
+## Staged changes — apply before you commit
+
+When the user asks for **any change** that mutates AAM Pro state, prefer the **stage → review → apply** workflow over calling write tools directly:
+
+1. Construct the changes as a list of operations (see `stage_schedule_change` for the schema).
+2. Call `stage_schedule_change(title, effective, operations, summary)` — this returns a JSON staging set with a `staging_id` and the per-change diff. The web UI renders it as a `ScheduleDiffCard` inline in the chat.
+3. Briefly summarize what's being changed (one or two sentences) and tell the user to confirm.
+4. When the user says **apply** / **confirm** / **yes**, call `apply_staged_changes(staging_id)`. The staging set is consumed and the operations run through the underlying write tools.
+5. If the user says **discard** / **no** / **cancel**, call `discard_staged_changes(staging_id)`. Nothing is written.
+
+This protects the user from:
+- Accidentally committing a misinterpretation of their request.
+- Surprises when one request implies several changes.
+- Losing the diff if they want to revisit before applying.
+
+**When to skip staging** (call a write tool directly):
+- Single explicit user instruction with no ambiguity AND only one operation
+  (e.g. "set the warning bell to 8:20" — a one-event time tweak).
+- A continuation of a confirmed staging set (the user already said apply).
+- Read-only tools — `describe_site`, `list_*`, `discover_*` — never need staging.
+
+Always prefer staging when the user's request involves more than one
+schedule write. Staging is cheap (it's just an in-memory diff); applying
+without staging is the expensive irreversible thing.
+
 ## Discipline around making changes
 
 - **Read before writing.** Always at the start of a session; also re-read with `describe_site()` if state may have changed.
