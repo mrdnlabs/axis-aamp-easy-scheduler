@@ -12,6 +12,7 @@ import { SecureCaptureCard } from "@/components/chat/secure-capture-card";
 import { ArtifactPill } from "@/components/chat/artifact-pill";
 import { ArtifactPane } from "@/components/artifacts/artifact-pane";
 import { DayTemplateArtifact } from "@/components/artifacts/day-template-artifact";
+import { SecureCaptureModal } from "@/components/artifacts/secure-capture-modal";
 import type { DayTemplateArtifact as DayTemplateData } from "@/lib/types";
 
 /**
@@ -28,6 +29,10 @@ export default function HomePage() {
   // implementation the assistant emits an artifact reference and this
   // state lives at the app level; for the demo we control it locally.
   const [showArtifact, setShowArtifact] = React.useState<boolean>(true);
+  // Secure-capture modal. In production, opens when the user clicks the
+  // "Set securely" button on a SecureCaptureCard; closes after the
+  // capture endpoint confirms the value was written to keyring.
+  const [captureOpen, setCaptureOpen] = React.useState<boolean>(false);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -47,6 +52,7 @@ export default function HomePage() {
               <DemoConversation
                 onOpenArtifact={() => setShowArtifact(true)}
                 artifactActive={showArtifact}
+                onSetSecurely={() => setCaptureOpen(true)}
               />
             </div>
           </main>
@@ -72,6 +78,14 @@ export default function HomePage() {
           </ArtifactPane>
         )}
       </div>
+
+      {/* Secure-capture modal (rendered at root so it overlays everything) */}
+      <SecureCaptureModal
+        open={captureOpen}
+        onOpenChange={setCaptureOpen}
+        credentialKey="device/default_password"
+        description="This is the password I'll set on every freshly-provisioned Axis device, and try first when authenticating against existing ones."
+      />
     </div>
   );
 }
@@ -83,9 +97,11 @@ export default function HomePage() {
 function DemoConversation({
   onOpenArtifact,
   artifactActive,
+  onSetSecurely,
 }: {
   onOpenArtifact: () => void;
   artifactActive: boolean;
+  onSetSecurely: () => void;
 }) {
   return (
     <>
@@ -203,6 +219,10 @@ function DemoConversation({
         <SecureCaptureCard
           key="device/default_password"
           description="This is the password I'll set on every freshly-provisioned Axis device, and try first when authenticating against existing ones."
+          onSetSecurely={onSetSecurely}
+          onCopyCli={() => {
+            navigator.clipboard?.writeText("aamp-set-credential device/default_password");
+          }}
         />
 
         <p className="text-13 text-slate-600 mt-1">
