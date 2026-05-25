@@ -13,7 +13,9 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Logo } from "@/components/brand";
 import { StatusDot } from "@/components/ui/status-dot";
 import { IconButton } from "@/components/ui/button";
+import { TokenUsagePill } from "@/components/shell/token-usage-pill";
 import { cn } from "@/lib/cn";
+import type { TokenTotals } from "@/lib/use-chat";
 
 interface TopBarProps {
   /** Friendly site name from the intent doc (e.g. "Lincoln Middle School"). */
@@ -25,6 +27,8 @@ interface TopBarProps {
   /** Full name + role line in the user dropdown. */
   userName: string;
   userRole: string;
+  /** Running session token totals; hidden when ``turns === 0``. */
+  tokenTotals?: TokenTotals;
   onNewChat?: () => void;
   onOpenHistory?: () => void;
   onNavigate?: (route: "audit" | "settings") => void;
@@ -50,6 +54,7 @@ export function TopBar({
   userInitials,
   userName,
   userRole,
+  tokenTotals,
   onNewChat,
   onOpenHistory,
   onNavigate,
@@ -66,6 +71,8 @@ export function TopBar({
       <div className="flex-1" />
 
       <SiteStatusPill siteName={siteName} status={serverStatus} />
+
+      {tokenTotals && <TokenUsagePill totals={tokenTotals} />}
 
       <div className="w-px h-[22px] bg-slate-200" />
 

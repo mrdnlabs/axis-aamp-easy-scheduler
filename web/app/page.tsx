@@ -7,9 +7,14 @@ import { MessageRow } from "@/components/chat/message-row";
 import { MessagePartView } from "@/components/chat/message-part-view";
 import { ArtifactPane } from "@/components/artifacts/artifact-pane";
 import { DayTemplateArtifact } from "@/components/artifacts/day-template-artifact";
+import { OnboardingArtifact } from "@/components/artifacts/onboarding-artifact";
 import { SecureCaptureModal } from "@/components/artifacts/secure-capture-modal";
 import { useChat } from "@/lib/use-chat";
-import type { ArtifactKind, DayTemplateArtifact as DayTemplateData } from "@/lib/types";
+import type {
+  ArtifactKind,
+  DayTemplateArtifact as DayTemplateData,
+  OnboardingArtifact as OnboardingArtifactData,
+} from "@/lib/types";
 
 /**
  * ChAAMP home — the live chat workspace.
@@ -28,7 +33,7 @@ import type { ArtifactKind, DayTemplateArtifact as DayTemplateData } from "@/lib
  * messages.
  */
 export default function HomePage() {
-  const { messages, isStreaming, error, send } = useChat(
+  const { messages, isStreaming, error, tokenTotals, send } = useChat(
     "Hi — I'm ChAAMP. Tell me what you'd like to change about your schedule, " +
       "or ask me about your devices. I'll show you the diff before I apply " +
       "anything.",
@@ -61,6 +66,7 @@ export default function HomePage() {
         userInitials="MR"
         userName="Maya Rivera"
         userRole="Admin · Lincoln MS"
+        tokenTotals={tokenTotals}
       />
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
@@ -150,12 +156,15 @@ export default function HomePage() {
             {artifact.artifact === "day_template" && (
               <DayTemplateArtifact data={demoDayTemplate(artifact.key)} />
             )}
-            {artifact.artifact !== "day_template" && (
+            {artifact.artifact === "onboarding" && (
+              <OnboardingArtifact data={demoOnboarding(artifact.key)} />
+            )}
+            {artifact.artifact === "discovery" && (
               <div className="text-13 text-slate-500">
                 <em>
-                  Artifact type ‘{artifact.artifact}’ not yet rendered.
-                  Add a component under{" "}
-                  <code className="mono">components/artifacts/</code>.
+                  Discovery artifact renderer is not yet built. Add a
+                  component under <code className="mono">components/artifacts/</code>
+                  and wire it in here.
                 </em>
               </div>
             )}
@@ -196,14 +205,35 @@ function artifactTitle(a: { artifact: ArtifactKind; key: string }): string {
   // Once real artifact data flows from the server this lookup will use
   // the actual title. For now we synthesize a placeholder.
   if (a.artifact === "day_template") return a.key || "Day template";
+  if (a.artifact === "onboarding") return a.key || "Device onboarding";
   return a.key || a.artifact;
 }
 
 /**
- * Stand-in until real day-template data flows from the server. The
- * artifact pane is rendered with this canned content when the chat
- * emits an artifact_pill with kind="day_template".
+ * Stand-in until real artifact data flows from the server (the
+ * artifact_pill part currently carries only ``key``, not the full
+ * payload). When the backend extends ``ArtifactPillPart`` with a
+ * ``data`` field, replace these stand-ins with a lookup against
+ * received data.
  */
+function demoOnboarding(key: string): OnboardingArtifactData {
+  return {
+    kind: "onboarding",
+    ip: key || "192.168.1.123",
+    model: "C1710",
+    mac: "E8:27:25:09:59:C6",
+    arch: "aarch64",
+    firmware: "12.9.57",
+    classification: "audio:speaker",
+    steps: [
+      { name: "Inspect device", status: "success", detail: "C1710 fw 12.9.57; factory-default", duration_ms: 620 },
+      { name: "Authenticate", status: "success", detail: "Created root user with fleet password", duration_ms: 480 },
+      { name: "Install ACAP", status: "running", detail: "Uploading AXIS_Audio_Manager_Pro_5_1_34_aarch64.eap…" },
+      { name: "Point at AAM Pro", status: "pending" },
+    ],
+  };
+}
+
 function demoDayTemplate(key: string): DayTemplateData {
   return {
     kind: "day_template",

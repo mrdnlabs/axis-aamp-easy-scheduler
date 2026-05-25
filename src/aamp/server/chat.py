@@ -25,8 +25,10 @@ import json
 import os
 import time
 import uuid
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Iterator, Literal, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -41,6 +43,9 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 # tool-heavy ChAAMP workload.
 DEFAULT_MODEL = os.environ.get("CHAAMP_GEMINI_MODEL", "gemini-2.5-flash")
 MAX_TOOL_ROUNDS = 12   # safety stop for runaway tool-call loops
+
+# Transcript log directory. One JSONL per session. Created on demand.
+TRANSCRIPT_DIR = Path(__file__).resolve().parent.parent.parent.parent / "logs"
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +98,125 @@ def _build_scrubber():
         else:
             values.append(v)
     return Scrubber(values)
+
+
+# ---------------------------------------------------------------------------
+# Transcript log writer
+# ---------------------------------------------------------------------------
+
+class TranscriptWriter:
+    """Append-only JSONL writer for the chat transcript.
+
+    One file per session — :data:`TRANSCRIPT_DIR` / ``chat_<session_id>_<ts>.jsonl``.
+    Events mirror the SSE stream shape so the file IS the recorded
+    conversation, no extra translation needed.
+
+    Resilient: every write is try/except'd. The chat must never fail
+    because the log can't be written (disk full, perms, etc.).
+    """
+
+    def __init__(self, session_id: str) -> None:
+        try:
+            TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.path: Optional[Path] = TRANSCRIPT_DIR / f"chat_web_{ts}_{session_id[:8]}.jsonl"
+            self._fp = self.path.open("a", encoding="utf-8", buffering=1)
+        except OSError:
+            self.path = None
+            self._fp = None
+
+    def write(self, kind: str, **payload: Any) -> None:
+        """Write one record. ``payload`` should already be scrubbed."""
+        if self._fp is None:
+            return
+        try:
+            self._fp.write(
+                json.dumps(
+                    {
+                        "ts": datetime.now().isoformat(timespec="milliseconds"),
+                        "kind": kind,
+                        **payload,
+                    },
+                    default=str,
+                )
+                + "\n"
+            )
+        except Exception:
+            # Logging must never crash the chat.
+            pass
+
+    def close(self) -> None:
+        if self._fp is None:
+            return
+        try:
+            self._fp.close()
+        except Exception:
+            pass
+        self._fp = None
+
+
+@contextmanager
+def transcript_session(session_id: str) -> Iterator[TranscriptWriter]:
+    """Context manager that ensures the log file closes even on stream errors."""
+    w = TranscriptWriter(session_id)
+    try:
+        yield w
+    finally:
+        w.close()
+
+
+# ---------------------------------------------------------------------------
+# Token usage accumulator (per-request)
+# ---------------------------------------------------------------------------
+
+class UsageAcc:
+    """Mirrors :class:`aamp.chat_log.UsageAccumulator` but in-server.
+
+    Per-request lifetime — the client owns the session totals (they
+    add up the per-request totals it receives). This keeps the server
+    stateless.
+    """
+    def __init__(self) -> None:
+        self.turns = 0
+        self.prompt = 0
+        self.candidates = 0
+        self.cached = 0
+        self.thoughts = 0
+        self.tool_overhead = 0
+        self.total = 0
+
+    def add(self, usage_metadata: Any) -> dict[str, int]:
+        """Fold one turn's usage and return the per-turn dict for the wire."""
+        if usage_metadata is None:
+            return {}
+        turn = {
+            "prompt_tokens": getattr(usage_metadata, "prompt_token_count", 0) or 0,
+            "candidates_tokens": getattr(usage_metadata, "candidates_token_count", 0) or 0,
+            "cached_tokens": getattr(usage_metadata, "cached_content_token_count", 0) or 0,
+            "thoughts_tokens": getattr(usage_metadata, "thoughts_token_count", 0) or 0,
+            "tool_use_prompt_tokens": getattr(usage_metadata, "tool_use_prompt_token_count", 0) or 0,
+            "total_tokens": getattr(usage_metadata, "total_token_count", 0) or 0,
+        }
+        self.turns += 1
+        self.prompt += turn["prompt_tokens"]
+        self.candidates += turn["candidates_tokens"]
+        self.cached += turn["cached_tokens"]
+        self.thoughts += turn["thoughts_tokens"]
+        self.tool_overhead += turn["tool_use_prompt_tokens"]
+        self.total += turn["total_tokens"]
+        return turn
+
+    def request_totals(self) -> dict[str, int]:
+        """Rollup across all tool rounds in this request."""
+        return {
+            "turns": self.turns,
+            "prompt_tokens": self.prompt,
+            "candidates_tokens": self.candidates,
+            "cached_tokens": self.cached,
+            "thoughts_tokens": self.thoughts,
+            "tool_use_prompt_tokens": self.tool_overhead,
+            "total_tokens": self.total,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -183,10 +307,25 @@ async def _run_turn(req: ChatRequest):
         return
 
     scrubber = _build_scrubber()
+    usage = UsageAcc()
+
+    # Open the transcript writer for this turn. Closed in the finally
+    # block at the bottom of this generator (FastAPI's StreamingResponse
+    # iterates the generator; the finally fires whether or not we hit
+    # an error / done).
+    log = TranscriptWriter(req.session_id)
+    log.write("turn_start",
+              session_id=req.session_id,
+              user_text=scrubber.scrub(req.text),
+              history_chars=sum(len(m.text) for m in req.history),
+              transcript_path=str(log.path) if log.path else None)
 
     # Always send the session id first so the client can correlate
     # streams with its own message log.
-    yield _sse("session", {"session_id": req.session_id})
+    yield _sse("session", {
+        "session_id": req.session_id,
+        "transcript_path": str(log.path) if log.path else None,
+    })
 
     # Build the Gemini ``contents`` list from history + this turn's text.
     contents: list[Any] = []
@@ -216,133 +355,170 @@ async def _run_turn(req: ChatRequest):
     # Tool-call loop. Each iteration either yields text + STOP, or yields
     # text + tool calls and adds the tool responses to ``contents`` for
     # the next iteration. Bounded by MAX_TOOL_ROUNDS to prevent runaway.
-    for round_idx in range(MAX_TOOL_ROUNDS):
-        try:
-            # The SDK's async path is ``client.aio.models.generate_content``.
-            response = await client.aio.models.generate_content(
-                model=DEFAULT_MODEL,
-                contents=contents,
-                config=config,
+    # The try/finally guards the log close — even if the SSE generator
+    # is dropped mid-stream (client disconnect, exception), the transcript
+    # file gets flushed.
+    try:
+        for round_idx in range(MAX_TOOL_ROUNDS):
+            try:
+                # The SDK's async path is ``client.aio.models.generate_content``.
+                response = await client.aio.models.generate_content(
+                    model=DEFAULT_MODEL,
+                    contents=contents,
+                    config=config,
+                )
+            except Exception as e:
+                msg = f"{type(e).__name__}: {e}"
+                log.write("error", stage=f"generate_content (round {round_idx + 1})", detail=msg)
+                yield _sse("error", {
+                    "detail": msg,
+                    "stage": f"generate_content (round {round_idx + 1})",
+                })
+                return
+
+            # Capture token usage for this round (may include cached / thoughts).
+            per_turn = usage.add(getattr(response, "usage_metadata", None))
+            if per_turn:
+                log.write("token_usage", per_turn=per_turn, totals=usage.request_totals())
+                yield _sse("usage", {
+                    "per_turn": per_turn,
+                    "request_totals": usage.request_totals(),
+                })
+
+            candidate = response.candidates[0] if response.candidates else None
+            finish_reason = (
+                candidate.finish_reason.name
+                if candidate and candidate.finish_reason
+                else None
             )
-        except Exception as e:
-            yield _sse("error", {
-                "detail": f"{type(e).__name__}: {e}",
-                "stage": f"generate_content (round {round_idx + 1})",
-            })
-            return
-
-        candidate = response.candidates[0] if response.candidates else None
-        finish_reason = (
-            candidate.finish_reason.name
-            if candidate and candidate.finish_reason
-            else None
-        )
-        if not candidate or not candidate.content or not candidate.content.parts:
-            # Nothing returned — bail with a hint.
-            yield _sse("part", {
-                "kind": "text",
-                "body": f"_(no response — finish_reason: {finish_reason or 'unknown'})_",
-            })
-            yield _sse("done", {})
-            return
-
-        # Split the response into text chunks + function calls.
-        text_chunks: list[str] = []
-        function_calls: list[Any] = []
-        for part in candidate.content.parts:
-            if getattr(part, "function_call", None):
-                function_calls.append(part.function_call)
-            elif getattr(part, "text", None):
-                text_chunks.append(part.text)
-
-        # Stream text parts. Each non-empty chunk becomes one SSE event.
-        for chunk in text_chunks:
-            cleaned = chunk.rstrip()
-            if cleaned:
-                yield _sse("part", {"kind": "text", "body": scrubber.scrub(cleaned)})
-                # Tiny yield so the event hits the socket promptly even if
-                # downstream tool calls take a while.
-                await asyncio.sleep(0)
-
-        if not function_calls:
-            # Turn complete. Surface finish_reason if it's noteworthy.
-            if finish_reason and finish_reason not in ("STOP", "MAX_TOKENS"):
+            if not candidate or not candidate.content or not candidate.content.parts:
+                # Nothing returned — bail with a hint.
                 yield _sse("part", {
                     "kind": "text",
-                    "body": f"_(finish_reason: {finish_reason})_",
+                    "body": f"_(no response — finish_reason: {finish_reason or 'unknown'})_",
                 })
-            yield _sse("done", {"finish_reason": finish_reason or "STOP"})
-            return
+                yield _sse("done", {"finish_reason": finish_reason or "EMPTY"})
+                return
 
-        # Dispatch each tool call. For each call we emit TWO events:
-        #   1. running status (so the UI renders a spinner)
-        #   2. final status with the args + result (so the card can be
-        #      expanded to see what happened)
-        tool_response_parts: list[Any] = []
-        for fc in function_calls:
-            args = dict(fc.args or {})
-            call_id = getattr(fc, "id", None) or f"tc_{uuid.uuid4().hex[:8]}"
-            args_json = scrubber.scrub(json.dumps(args, indent=2, default=str))
+            # Split the response into text chunks + function calls.
+            text_chunks: list[str] = []
+            function_calls: list[Any] = []
+            for part in candidate.content.parts:
+                if getattr(part, "function_call", None):
+                    function_calls.append(part.function_call)
+                elif getattr(part, "text", None):
+                    text_chunks.append(part.text)
 
-            # Running event
-            yield _sse("part", {
-                "kind": "tool_call",
-                "call_id": call_id,
-                "name": fc.name,
-                "summary": "running…",
-                "status": "running",
-                "args": args_json,
-            })
-            await asyncio.sleep(0)
+            # Stream text parts. Each non-empty chunk becomes one SSE event.
+            for chunk in text_chunks:
+                cleaned = chunk.rstrip()
+                if cleaned:
+                    scrubbed = scrubber.scrub(cleaned)
+                    log.write("assistant_text", body=scrubbed, finish_reason=finish_reason)
+                    yield _sse("part", {"kind": "text", "body": scrubbed})
+                    # Tiny yield so the event hits the socket promptly even if
+                    # downstream tool calls take a while.
+                    await asyncio.sleep(0)
 
-            # Dispatch
-            t0 = time.monotonic()
-            try:
-                result_text = await call_mcp_tool(fc.name, args)
-                duration_ms = int((time.monotonic() - t0) * 1000)
-                is_error = result_text.startswith("TOOL_ERROR:")
-            except Exception as e:
-                result_text = f"TOOL_ERROR: {type(e).__name__}: {e}"
-                duration_ms = int((time.monotonic() - t0) * 1000)
-                is_error = True
+            if not function_calls:
+                # Turn complete. Surface finish_reason if it's noteworthy.
+                if finish_reason and finish_reason not in ("STOP", "MAX_TOKENS"):
+                    yield _sse("part", {
+                        "kind": "text",
+                        "body": f"_(finish_reason: {finish_reason})_",
+                    })
+                log.write("done", finish_reason=finish_reason or "STOP",
+                          totals=usage.request_totals())
+                yield _sse("done", {
+                    "finish_reason": finish_reason or "STOP",
+                    "request_totals": usage.request_totals(),
+                })
+                return
 
-            scrubbed_result = scrubber.scrub(result_text)
+            # Dispatch each tool call. For each call we emit TWO events:
+            #   1. running status (so the UI renders a spinner)
+            #   2. final status with the args + result (so the card can be
+            #      expanded to see what happened)
+            tool_response_parts: list[Any] = []
+            for fc in function_calls:
+                args = dict(fc.args or {})
+                call_id = getattr(fc, "id", None) or f"tc_{uuid.uuid4().hex[:8]}"
+                args_json = scrubber.scrub(json.dumps(args, indent=2, default=str))
 
-            # Completed event — same call_id so the frontend replaces the
-            # earlier running entry rather than appending a new card.
-            yield _sse("part", {
-                "kind": "tool_call",
-                "call_id": call_id,
-                "name": fc.name,
-                "summary": _summary_from_result(scrubbed_result),
-                "status": "failed" if is_error else "success",
-                "args": args_json,
-                "result": scrubbed_result,
-                "duration_ms": duration_ms,
-            })
+                log.write("tool_call", call_id=call_id, name=fc.name,
+                          args=args_json, status="running")
 
-            # Feed the result back to Gemini for the next round. We pass
-            # the UN-scrubbed result so the model has full context for
-            # follow-up decisions — the scrub-on-the-wire only protects
-            # the on-screen rendering + transcript log.
-            tool_response_parts.append(
-                types.Part(
-                    function_response=types.FunctionResponse(
-                        name=fc.name,
-                        response={"result": result_text},
-                        id=call_id,
+                # Running event
+                yield _sse("part", {
+                    "kind": "tool_call",
+                    "call_id": call_id,
+                    "name": fc.name,
+                    "summary": "running…",
+                    "status": "running",
+                    "args": args_json,
+                })
+                await asyncio.sleep(0)
+
+                # Dispatch
+                t0 = time.monotonic()
+                try:
+                    result_text = await call_mcp_tool(fc.name, args)
+                    duration_ms = int((time.monotonic() - t0) * 1000)
+                    is_error = result_text.startswith("TOOL_ERROR:")
+                except Exception as e:
+                    result_text = f"TOOL_ERROR: {type(e).__name__}: {e}"
+                    duration_ms = int((time.monotonic() - t0) * 1000)
+                    is_error = True
+
+                scrubbed_result = scrubber.scrub(result_text)
+
+                log.write("tool_result", call_id=call_id, name=fc.name,
+                          status="failed" if is_error else "success",
+                          duration_ms=duration_ms, result=scrubbed_result)
+
+                # Completed event — same call_id so the frontend replaces the
+                # earlier running entry rather than appending a new card.
+                yield _sse("part", {
+                    "kind": "tool_call",
+                    "call_id": call_id,
+                    "name": fc.name,
+                    "summary": _summary_from_result(scrubbed_result),
+                    "status": "failed" if is_error else "success",
+                    "args": args_json,
+                    "result": scrubbed_result,
+                    "duration_ms": duration_ms,
+                })
+
+                # Feed the result back to Gemini for the next round. We pass
+                # the UN-scrubbed result so the model has full context for
+                # follow-up decisions — the scrub-on-the-wire only protects
+                # the on-screen rendering + transcript log.
+                tool_response_parts.append(
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            name=fc.name,
+                            response={"result": result_text},
+                            id=call_id,
+                        )
                     )
                 )
-            )
 
-        # Append the model's request + the tool responses to ``contents``
-        # so the next generate_content sees both halves.
-        contents.append(candidate.content)
-        contents.append(types.Content(role="user", parts=tool_response_parts))
+            # Append the model's request + the tool responses to ``contents``
+            # so the next generate_content sees both halves.
+            contents.append(candidate.content)
+            contents.append(types.Content(role="user", parts=tool_response_parts))
 
-    # Round limit reached without STOP — surface and end.
-    yield _sse("part", {
-        "kind": "text",
-        "body": "_(Reached the tool-call round limit. Ending turn — ask again to continue.)_",
-    })
-    yield _sse("done", {"finish_reason": "MAX_TOOL_ROUNDS"})
+        # Round limit reached without STOP — surface and end.
+        log.write("max_rounds_reached", totals=usage.request_totals())
+        yield _sse("part", {
+            "kind": "text",
+            "body": "_(Reached the tool-call round limit. Ending turn — ask again to continue.)_",
+        })
+        yield _sse("done", {
+            "finish_reason": "MAX_TOOL_ROUNDS",
+            "request_totals": usage.request_totals(),
+        })
+    finally:
+        # Flush + close the transcript file. Runs even if the generator
+        # is closed early (client disconnect, downstream exception).
+        log.close()

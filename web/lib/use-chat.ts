@@ -15,13 +15,42 @@ import type { ChatMessage, MessagePart, ToolCallPart } from "@/lib/types";
  *
  * Stateless on the wire — the server gets the full history each send.
  */
+export interface TokenTotals {
+  /** Number of completed user turns. */
+  turns: number;
+  /** Cumulative input tokens across the session. */
+  prompt_tokens: number;
+  /** Cumulative output tokens across the session. */
+  candidates_tokens: number;
+  /** Prompt-cache hits — billed at a discount. */
+  cached_tokens: number;
+  /** Extended-thinking output (only present when enabled). */
+  thoughts_tokens: number;
+  /** Per-tool overhead — declarations injected into each request. */
+  tool_use_prompt_tokens: number;
+  /** SDK-reported total. */
+  total_tokens: number;
+}
+
 export interface UseChatResult {
   messages: ChatMessage[];
   isStreaming: boolean;
   error: { detail: string; status?: number } | null;
+  /** Running session totals — accumulated across all sends. */
+  tokenTotals: TokenTotals;
   send: (text: string) => Promise<void>;
   reset: () => void;
 }
+
+const EMPTY_TOTALS: TokenTotals = {
+  turns: 0,
+  prompt_tokens: 0,
+  candidates_tokens: 0,
+  cached_tokens: 0,
+  thoughts_tokens: 0,
+  tool_use_prompt_tokens: 0,
+  total_tokens: 0,
+};
 
 const SESSION_ID =
   typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -43,6 +72,7 @@ export function useChat(initialAssistantText?: string): UseChatResult {
   );
   const [isStreaming, setIsStreaming] = React.useState(false);
   const [error, setError] = React.useState<UseChatResult["error"]>(null);
+  const [tokenTotals, setTokenTotals] = React.useState<TokenTotals>(EMPTY_TOTALS);
 
   const reset = React.useCallback(() => {
     setMessages(
@@ -59,6 +89,7 @@ export function useChat(initialAssistantText?: string): UseChatResult {
     );
     setError(null);
     setIsStreaming(false);
+    setTokenTotals(EMPTY_TOTALS);
   }, [initialAssistantText]);
 
   const send = React.useCallback(
@@ -96,6 +127,20 @@ export function useChat(initialAssistantText?: string): UseChatResult {
           if (ev.event === "part") {
             const part = ev.data as MessagePart;
             setMessages((prev) => appendPart(prev, asstMsg.id, part));
+          } else if (ev.event === "usage") {
+            // Per-turn usage delta — fold into the running session totals.
+            const d = ev.data as { per_turn?: Partial<TokenTotals> };
+            const delta = d.per_turn ?? {};
+            setTokenTotals((t) => ({
+              turns: t.turns + 1,
+              prompt_tokens: t.prompt_tokens + (delta.prompt_tokens ?? 0),
+              candidates_tokens: t.candidates_tokens + (delta.candidates_tokens ?? 0),
+              cached_tokens: t.cached_tokens + (delta.cached_tokens ?? 0),
+              thoughts_tokens: t.thoughts_tokens + (delta.thoughts_tokens ?? 0),
+              tool_use_prompt_tokens:
+                t.tool_use_prompt_tokens + (delta.tool_use_prompt_tokens ?? 0),
+              total_tokens: t.total_tokens + (delta.total_tokens ?? 0),
+            }));
           } else if (ev.event === "error") {
             const d = ev.data as { detail?: string; stage?: string };
             setError({ detail: d.detail ?? "Server error" });
@@ -125,7 +170,7 @@ export function useChat(initialAssistantText?: string): UseChatResult {
     [messages, isStreaming],
   );
 
-  return { messages, isStreaming, error, send, reset };
+  return { messages, isStreaming, error, tokenTotals, send, reset };
 }
 
 // ---------------------------------------------------------------------------
