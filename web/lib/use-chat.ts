@@ -2,7 +2,13 @@
 
 import * as React from "react";
 import { streamChatMessage, ApiError, type HistoryMessage } from "@/lib/api";
-import type { ChatMessage, MessagePart, ToolCallPart } from "@/lib/types";
+import type {
+  Artifact,
+  ArtifactPillPart,
+  ChatMessage,
+  MessagePart,
+  ToolCallPart,
+} from "@/lib/types";
 
 /**
  * Chat state + send-message hook.
@@ -38,8 +44,18 @@ export interface UseChatResult {
   error: { detail: string; status?: number } | null;
   /** Running session totals — accumulated across all sends. */
   tokenTotals: TokenTotals;
+  /**
+   * Latest known data for every artifact emitted this session, keyed by
+   * ``${artifact}:${key}``. Re-emitting a pill with the same key updates
+   * in place so an open pane reflects the new state automatically.
+   */
+  artifacts: Record<string, Artifact>;
   send: (text: string) => Promise<void>;
   reset: () => void;
+}
+
+function artifactStoreKey(a: { artifact: string; key: string }): string {
+  return `${a.artifact}:${a.key}`;
 }
 
 const EMPTY_TOTALS: TokenTotals = {
@@ -73,6 +89,7 @@ export function useChat(initialAssistantText?: string): UseChatResult {
   const [isStreaming, setIsStreaming] = React.useState(false);
   const [error, setError] = React.useState<UseChatResult["error"]>(null);
   const [tokenTotals, setTokenTotals] = React.useState<TokenTotals>(EMPTY_TOTALS);
+  const [artifacts, setArtifacts] = React.useState<Record<string, Artifact>>({});
 
   const reset = React.useCallback(() => {
     setMessages(
@@ -90,6 +107,7 @@ export function useChat(initialAssistantText?: string): UseChatResult {
     setError(null);
     setIsStreaming(false);
     setTokenTotals(EMPTY_TOTALS);
+    setArtifacts({});
   }, [initialAssistantText]);
 
   const send = React.useCallback(
@@ -127,6 +145,18 @@ export function useChat(initialAssistantText?: string): UseChatResult {
           if (ev.event === "part") {
             const part = ev.data as MessagePart;
             setMessages((prev) => appendPart(prev, asstMsg.id, part));
+            // If the part is an artifact pill carrying data, also cache
+            // the data in the artifact store so the side pane can render
+            // from it whenever the user opens it.
+            if (part.kind === "artifact_pill") {
+              const pp = part as ArtifactPillPart;
+              if (pp.data) {
+                setArtifacts((prev) => ({
+                  ...prev,
+                  [artifactStoreKey(pp)]: pp.data!,
+                }));
+              }
+            }
           } else if (ev.event === "usage") {
             // Per-turn usage delta — fold into the running session totals.
             const d = ev.data as { per_turn?: Partial<TokenTotals> };
@@ -170,8 +200,10 @@ export function useChat(initialAssistantText?: string): UseChatResult {
     [messages, isStreaming],
   );
 
-  return { messages, isStreaming, error, tokenTotals, send, reset };
+  return { messages, isStreaming, error, tokenTotals, artifacts, send, reset };
 }
+
+export { artifactStoreKey };
 
 // ---------------------------------------------------------------------------
 // Helpers

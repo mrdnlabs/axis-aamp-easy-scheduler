@@ -125,6 +125,17 @@ export interface ArtifactPillPart {
   key: string;
   title: string;
   subtitle?: string;
+  /**
+   * Optional inline payload. When present, the pane renders directly
+   * from this; when absent, the renderer falls back to demo data (or
+   * shows a "no data yet" placeholder).
+   *
+   * Re-emitting a pill with the same ``(artifact, key)`` and updated
+   * ``data`` is how the server streams live updates into an artifact
+   * the user already has open (e.g. an onboarding pipeline advancing
+   * step by step).
+   */
+  data?: DayTemplateArtifact | OnboardingArtifact | DiscoveryArtifact;
 }
 
 export type MessagePart =
@@ -187,4 +198,34 @@ export interface OnboardingArtifact {
   steps: PipelineStep[];
 }
 
-export type Artifact = DayTemplateArtifact | OnboardingArtifact;
+/** Result of a multi-protocol LAN discovery sweep. */
+export interface DiscoveryArtifact {
+  kind: "discovery";
+  /** Per-protocol stats — what each method contributed. */
+  methods: DiscoveryMethodResult[];
+  /** Merged unique-device list, sorted by IP. */
+  devices: DiscoveredDevice[];
+  /** Wall-clock duration of the run, seconds. */
+  total_seconds?: number;
+}
+
+export interface DiscoveryMethodResult {
+  /** "mdns" / "ssdp" / "ws-discovery" / "http-sweep" / "arp" */
+  name: string;
+  devices_found: number;
+  seconds: number;
+  error?: string;
+}
+
+export interface DiscoveredDevice {
+  ip: string;
+  mac?: string;
+  model?: string;
+  /** "audio" / "audio?" / "non-audio" / "aam-pro-server" / "unknown" */
+  device_class: string;
+  audio_subtype?: string;
+  /** "+" delimited list of methods that found this device. */
+  sources: string;
+}
+
+export type Artifact = DayTemplateArtifact | OnboardingArtifact | DiscoveryArtifact;

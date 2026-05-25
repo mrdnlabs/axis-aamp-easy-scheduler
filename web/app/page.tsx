@@ -8,13 +8,10 @@ import { MessagePartView } from "@/components/chat/message-part-view";
 import { ArtifactPane } from "@/components/artifacts/artifact-pane";
 import { DayTemplateArtifact } from "@/components/artifacts/day-template-artifact";
 import { OnboardingArtifact } from "@/components/artifacts/onboarding-artifact";
+import { DiscoveryArtifact } from "@/components/artifacts/discovery-artifact";
 import { SecureCaptureModal } from "@/components/artifacts/secure-capture-modal";
-import { useChat } from "@/lib/use-chat";
-import type {
-  ArtifactKind,
-  DayTemplateArtifact as DayTemplateData,
-  OnboardingArtifact as OnboardingArtifactData,
-} from "@/lib/types";
+import { useChat, artifactStoreKey } from "@/lib/use-chat";
+import type { ArtifactKind } from "@/lib/types";
 
 /**
  * ChAAMP home — the live chat workspace.
@@ -33,7 +30,7 @@ import type {
  * messages.
  */
 export default function HomePage() {
-  const { messages, isStreaming, error, tokenTotals, send } = useChat(
+  const { messages, isStreaming, error, tokenTotals, artifacts, send } = useChat(
     "Hi — I'm ChAAMP. Tell me what you'd like to change about your schedule, " +
       "or ask me about your devices. I'll show you the diff before I apply " +
       "anything.",
@@ -146,28 +143,49 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Artifact pane — opens on demand */}
+        {/* Artifact pane — opens on demand. Data comes from the
+            artifact store (server-emitted via emit_artifact_pill).
+            Falls back to a demo if the LLM opened the pane without
+            sending data. */}
         {artifact && (
           <ArtifactPane
             kind={artifact.artifact}
             title={artifactTitle(artifact)}
             onClose={() => setArtifact(null)}
           >
-            {artifact.artifact === "day_template" && (
-              <DayTemplateArtifact data={demoDayTemplate(artifact.key)} />
-            )}
-            {artifact.artifact === "onboarding" && (
-              <OnboardingArtifact data={demoOnboarding(artifact.key)} />
-            )}
-            {artifact.artifact === "discovery" && (
-              <div className="text-13 text-slate-500">
-                <em>
-                  Discovery artifact renderer is not yet built. Add a
-                  component under <code className="mono">components/artifacts/</code>
-                  and wire it in here.
-                </em>
-              </div>
-            )}
+            {(() => {
+              const live = artifacts[artifactStoreKey(artifact)];
+              if (artifact.artifact === "day_template") {
+                return (
+                  <DayTemplateArtifact
+                    data={
+                      live?.kind === "day_template"
+                        ? live
+                        : demoDayTemplate(artifact.key)
+                    }
+                  />
+                );
+              }
+              if (artifact.artifact === "onboarding") {
+                return (
+                  <OnboardingArtifact
+                    data={
+                      live?.kind === "onboarding"
+                        ? live
+                        : demoOnboarding(artifact.key)
+                    }
+                  />
+                );
+              }
+              if (artifact.artifact === "discovery") {
+                return live?.kind === "discovery" ? (
+                  <DiscoveryArtifact data={live} />
+                ) : (
+                  <DiscoveryEmpty />
+                );
+              }
+              return null;
+            })()}
           </ArtifactPane>
         )}
       </div>
@@ -216,7 +234,7 @@ function artifactTitle(a: { artifact: ArtifactKind; key: string }): string {
  * ``data`` field, replace these stand-ins with a lookup against
  * received data.
  */
-function demoOnboarding(key: string): OnboardingArtifactData {
+function demoOnboarding(key: string): import("@/lib/types").OnboardingArtifact {
   return {
     kind: "onboarding",
     ip: key || "192.168.1.123",
@@ -234,7 +252,19 @@ function demoOnboarding(key: string): OnboardingArtifactData {
   };
 }
 
-function demoDayTemplate(key: string): DayTemplateData {
+function DiscoveryEmpty() {
+  return (
+    <div className="text-13 text-slate-500 leading-relaxed">
+      <em>
+        No discovery data attached to this pill yet. The next sweep will
+        populate this view — or ask the assistant to run a fresh
+        discovery and surface the result here.
+      </em>
+    </div>
+  );
+}
+
+function demoDayTemplate(key: string): import("@/lib/types").DayTemplateArtifact {
   return {
     kind: "day_template",
     title: key || "Day template (demo)",

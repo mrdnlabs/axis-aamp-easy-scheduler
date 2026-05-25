@@ -965,6 +965,140 @@ def _format_onboarding_result(r: "_onboard.OnboardingResult") -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Settings — user-tunable runtime config (~/.aamp_settings.json)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def list_settings() -> str:
+    """List every tunable runtime setting with its current value + description.
+
+    Settings are non-secret operational config — history-trim length,
+    discovery timeouts, capture rate limit, etc. Stored at
+    ``~/.aamp_settings.json``. Reset a setting to its default by passing
+    an empty string or ``"default"`` to ``set_setting``.
+
+    Returns:
+        Markdown table grouped by category.
+    """
+    from . import settings as _settings
+    rows = _settings.all_settings()
+    # Group by category for readability
+    by_cat: dict[str, list] = {}
+    for d, v in rows:
+        by_cat.setdefault(d.category, []).append((d, v))
+    out: list[str] = []
+    for cat in sorted(by_cat):
+        out.append(f"## {cat.title()}")
+        out.append("")
+        out.append("| Key | Value | Default | Description |")
+        out.append("|---|---|---|---|")
+        for d, v in by_cat[cat]:
+            out.append(
+                f"| `{d.key}` | `{v!r}` | `{d.default!r}` | {d.description} |"
+            )
+        out.append("")
+    return "\n".join(out).rstrip()
+
+
+@mcp.tool()
+def get_setting(key: str) -> str:
+    """Read one setting value. Returns the current effective value
+    (which may be the on-disk override or the declared default)."""
+    from . import settings as _settings
+    d = _settings.def_for(key)
+    if d is None:
+        return (
+            f"Unknown setting: {key!r}. Known settings: "
+            f"{', '.join(s.key for s in _settings.DEFAULTS)}"
+        )
+    v = _settings.get_setting(key)
+    return f"{key} = {v!r}  (default: {d.default!r})"
+
+
+@mcp.tool()
+def set_setting(key: str, value: str) -> str:
+    """Update a runtime setting. Persists to ``~/.aamp_settings.json``.
+
+    Args:
+        key: One of the canonical keys from :func:`list_settings`.
+        value: New value. Coerced to the declared type — strings like
+            ``"50"`` for an int setting, ``"true"`` for a bool. Passing
+            ``""`` or ``"default"`` resets the setting to its declared
+            default (removes the override).
+
+    Returns:
+        Confirmation string with the new effective value.
+    """
+    from . import settings as _settings
+    d = _settings.def_for(key)
+    if d is None:
+        return (
+            f"Unknown setting: {key!r}. Known: "
+            f"{', '.join(s.key for s in _settings.DEFAULTS)}"
+        )
+    if value == "" or value.lower() == "default":
+        _settings.delete_setting(key)
+        return f"Reset {key} to default: {d.default!r}"
+    try:
+        _settings.set_setting(key, value)
+    except (KeyError, ValueError) as e:
+        return f"Failed: {e}"
+    return f"Set {key} = {_settings.get_setting(key)!r}  (default: {d.default!r})"
+
+
+# ---------------------------------------------------------------------------
+# Artifact-pill emission — surfaces the right-side pane from the chat
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def emit_artifact_pill(
+    artifact: str,
+    key: str,
+    title: str,
+    subtitle: str = "",
+    data_json: str = "",
+) -> str:
+    """Render an ArtifactPill in the chat that opens the right-side pane.
+
+    Call this when the conversation has produced a visualization that
+    deserves more real estate than an inline tool-call card — a day-
+    template timeline, a live onboarding pipeline, a discovery sweep
+    breakdown, etc.
+
+    Args:
+        artifact: One of ``"day_template"``, ``"onboarding"``,
+            ``"discovery"``. Determines which component the pane uses.
+        key: Stable identifier for this artifact instance (e.g. a
+            device IP, a template name). Re-emitting with the same
+            ``(artifact, key)`` UPDATES the existing artifact instead
+            of creating a new one — useful for live-updating views like
+            a streaming onboarding pipeline.
+        title: Pill title (e.g. ``"Late-start Wednesday timeline"``).
+        subtitle: Optional small grey text under the title.
+        data_json: JSON-encoded artifact payload. Must match the schema
+            for ``artifact`` (see ``web/lib/types.ts`` for the
+            ``DayTemplateArtifact`` / ``OnboardingArtifact`` /
+            ``DiscoveryArtifact`` shapes).
+
+    Returns:
+        A short confirmation. The chat backend recognizes this tool's
+        return and emits the corresponding ``artifact_pill`` SSE part
+        — the LLM doesn't need to do anything else.
+    """
+    valid = ("day_template", "onboarding", "discovery")
+    if artifact not in valid:
+        return f"Unknown artifact kind: {artifact!r}. Expected one of: {valid}"
+    # Validate JSON if provided
+    if data_json:
+        try:
+            import json as _json
+            _json.loads(data_json)
+        except _json.JSONDecodeError as e:
+            return f"Invalid data_json: {e}"
+    return f"Emitted {artifact} artifact pill (key={key!r}, title={title!r})"
+
+
+# ---------------------------------------------------------------------------
 # Staging — apply-confirm-commit workflow for schedule changes
 # ---------------------------------------------------------------------------
 

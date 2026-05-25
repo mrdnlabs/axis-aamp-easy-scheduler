@@ -228,6 +228,55 @@ def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+def _build_artifact_pill_from_args(args: dict[str, Any], scrubber: Any) -> Optional[dict[str, Any]]:
+    """Translate an ``emit_artifact_pill`` MCP call into the SSE part payload.
+
+    Parses the LLM-supplied ``data_json`` (if any) and packages everything
+    into the shape the frontend's ``ArtifactPillPart`` expects. Returns
+    ``None`` if the args are malformed — the chat backend silently skips
+    the pill in that case (the original tool-call card still shows what
+    happened).
+
+    The data payload is scrubbed before going on the wire — defense in
+    depth in case the LLM accidentally embedded a secret in the JSON.
+    """
+    artifact = args.get("artifact")
+    key = args.get("key")
+    title = args.get("title")
+    if not artifact or not key or not title:
+        return None
+    pill: dict[str, Any] = {
+        "artifact": artifact,
+        "key": str(key),
+        "title": scrubber.scrub(str(title)),
+    }
+    subtitle = args.get("subtitle")
+    if subtitle:
+        pill["subtitle"] = scrubber.scrub(str(subtitle))
+    data_json = args.get("data_json")
+    if data_json:
+        try:
+            data = json.loads(data_json)
+            # Walk the payload through the scrubber too — strings only.
+            pill["data"] = _scrub_obj(data, scrubber)
+        except (json.JSONDecodeError, TypeError):
+            # Bad JSON — skip the data; the pill still renders with the
+            # frontend's demo fallback or shows an empty pane.
+            pass
+    return pill
+
+
+def _scrub_obj(obj: Any, scrubber: Any) -> Any:
+    """Recursively scrub every string leaf in a JSON-like structure."""
+    if isinstance(obj, str):
+        return scrubber.scrub(obj)
+    if isinstance(obj, dict):
+        return {k: _scrub_obj(v, scrubber) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_scrub_obj(v, scrubber) for v in obj]
+    return obj
+
+
 def _summary_from_result(text: str) -> str:
     """Return the first line of ``text`` (truncated) — used as the
     collapsed-card summary on the frontend ToolCallCard."""
@@ -327,9 +376,21 @@ async def _run_turn(req: ChatRequest):
         "transcript_path": str(log.path) if log.path else None,
     })
 
+    # Apply history trim (configurable via aamp.settings).
+    from .. import settings as _settings
+    max_turns = _settings.get_setting("max_history_turns")
+    trimmed_history = req.history
+    trimmed_count = 0
+    if isinstance(max_turns, int) and max_turns > 0 and len(req.history) > max_turns:
+        trimmed_count = len(req.history) - max_turns
+        trimmed_history = req.history[-max_turns:]
+        log.write("history_trimmed",
+                  original=len(req.history), kept=max_turns,
+                  dropped=trimmed_count)
+
     # Build the Gemini ``contents`` list from history + this turn's text.
     contents: list[Any] = []
-    for msg in req.history:
+    for msg in trimmed_history:
         role = "user" if msg.role == "user" else "model"
         contents.append(
             types.Content(role=role, parts=[types.Part(text=scrubber.scrub(msg.text))])
@@ -488,6 +549,18 @@ async def _run_turn(req: ChatRequest):
                     "result": scrubbed_result,
                     "duration_ms": duration_ms,
                 })
+
+                # Side effect: if the tool was ``emit_artifact_pill``,
+                # also emit a corresponding ``artifact_pill`` part with
+                # the parsed data so the frontend can open the side pane
+                # and render the rich view. The tool returns a normal
+                # confirmation string (above); the pill is a separate
+                # SSE event keyed off the same call.
+                if fc.name == "emit_artifact_pill" and not is_error:
+                    pill = _build_artifact_pill_from_args(args, scrubber)
+                    if pill is not None:
+                        log.write("artifact_pill", **pill)
+                        yield _sse("part", {"kind": "artifact_pill", **pill})
 
                 # Feed the result back to Gemini for the next round. We pass
                 # the UN-scrubbed result so the model has full context for

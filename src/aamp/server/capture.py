@@ -30,10 +30,11 @@ from __future__ import annotations
 import secrets
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from ..audit import AuditLog
@@ -61,6 +62,43 @@ _LOCK = threading.Lock()
 _TOKENS: dict[str, CaptureToken] = {}
 _AUDIT = AuditLog()   # uses the same default ~/.aamp_audit.log
 
+# Per-source rate-limit state. Stores deque of recent mint timestamps
+# per source identifier (typically client IP). Sliding 60-second window;
+# limit comes from ``settings.capture_rate_limit_per_minute``.
+_RATE_LIMIT_WINDOW_SECONDS = 60.0
+_rate_buckets: dict[str, deque[float]] = {}
+_rate_lock = threading.Lock()
+
+
+def _rate_limit_check(source: str, limit_per_minute: int) -> Optional[int]:
+    """Sliding-window rate limiter.
+
+    Records the mint attempt against ``source`` and returns ``None`` if
+    we're under the limit, or the number of seconds the caller must wait
+    before the next attempt would succeed (suitable for an HTTP
+    Retry-After header) if over.
+
+    Stateless aside from the in-process buckets. Restarting the server
+    clears the buckets — which is fine; a confused client will mostly
+    have given up by then.
+    """
+    if limit_per_minute <= 0:
+        return None  # disabled
+    now = time.monotonic()
+    cutoff = now - _RATE_LIMIT_WINDOW_SECONDS
+    with _rate_lock:
+        bucket = _rate_buckets.setdefault(source, deque())
+        # Drop timestamps that are older than the window.
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= limit_per_minute:
+            # Caller must wait until the oldest timestamp falls out of
+            # the window for a slot to free up.
+            retry_after = int(bucket[0] + _RATE_LIMIT_WINDOW_SECONDS - now) + 1
+            return max(1, retry_after)
+        bucket.append(now)
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Public API (called by MCP tool + the FastAPI route)
@@ -70,13 +108,17 @@ def start_capture(
     account_id: str,
     field: str,
     *,
-    ttl_seconds: int = DEFAULT_TTL_SECONDS,
+    ttl_seconds: Optional[int] = None,
 ) -> CaptureToken:
     """Mint a short-lived token for capturing ``(account_id, field)``.
 
     Validates the slot against ``KNOWN_SECRETS`` so the LLM can't open a
-    capture for a typo. Audits the request.
+    capture for a typo. Audits the request. TTL defaults to the
+    ``capture_token_ttl_seconds`` setting (10 min out of the box).
     """
+    if ttl_seconds is None:
+        from .. import settings as _settings
+        ttl_seconds = int(_settings.get_setting("capture_token_ttl_seconds") or DEFAULT_TTL_SECONDS)
     s = secret_for(account_id, field)
     if s is None:
         _AUDIT.record(
@@ -204,9 +246,33 @@ class SubmitResponse(BaseModel):
 
 
 @router.post("/start", response_model=StartResponse)
-def http_start(req: StartRequest) -> StartResponse:
+def http_start(req: StartRequest, request: Request) -> StartResponse:
     """Mint a capture token. Normally called by the MCP tool; exposed here
-    for testing and for clients that want to invoke capture directly."""
+    for testing and for clients that want to invoke capture directly.
+
+    Rate-limited per client IP using the sliding-window in
+    :func:`_rate_limit_check`. Limit comes from the
+    ``capture_rate_limit_per_minute`` setting.
+    """
+    from .. import settings as _settings
+    limit = _settings.get_setting("capture_rate_limit_per_minute") or 20
+    source = request.client.host if request.client else "unknown"
+    retry_after = _rate_limit_check(source, int(limit))
+    if retry_after is not None:
+        _AUDIT.record(
+            "capture_start", req.account_id, req.field,
+            decision="denied",
+            reason=f"rate limit ({limit}/min) exceeded from {source}",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Too many capture requests from this source. Try again "
+                f"in {retry_after}s. (Limit: {limit}/min, configurable via "
+                f"the capture_rate_limit_per_minute setting.)"
+            ),
+            headers={"Retry-After": str(retry_after)},
+        )
     try:
         rec = start_capture(req.account_id, req.field)
     except ValueError as e:
