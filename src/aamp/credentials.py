@@ -73,6 +73,8 @@ KNOWN_SECRETS: tuple[SecretField, ...] = (
                 is_csv_list=True),
     SecretField("elevenlabs", "api_key", "ELEVENLABS_API_KEY",
                 "ElevenLabs voice-generation API key"),
+    SecretField("gemini", "api_key", "GEMINI_API_KEY",
+                "Gemini API key (used by the ChAAMP web chat backend)"),
 )
 
 

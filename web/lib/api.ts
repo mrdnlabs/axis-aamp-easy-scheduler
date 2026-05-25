@@ -90,52 +90,58 @@ export async function submitCapture(
 // Chat
 // ---------------------------------------------------------------------------
 
-export interface SendMessageRequest {
+export interface HistoryMessage {
+  role: "user" | "assistant";
   text: string;
+}
+
+export interface ChatRequest {
+  text: string;
+  history?: HistoryMessage[];
   session_id?: string;
 }
 
-export interface SendMessageAck {
-  session_id: string;
-  accepted: boolean;
-}
-
-/**
- * Submit a user message. The actual response parts arrive on the
- * companion SSE stream (``streamChat``). Currently the backend is a
- * stub — see ``src/aamp/server/chat.py``.
- */
-export async function sendMessage(
-  req: SendMessageRequest,
-): Promise<SendMessageAck> {
-  const r = await fetch("/api/chat/message", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(req),
-  });
-  if (!r.ok) throw await apiError(r);
-  return r.json();
-}
-
-export interface SseEvent {
+export interface SseEvent<T = unknown> {
   event: string;
-  data: unknown;
+  data: T;
 }
 
 /**
- * Open an SSE connection to the chat stream. Returns an AsyncGenerator
- * yielding parsed events. The generator ends when the server sends
- * ``event: done`` or the connection closes.
+ * Send a user message and stream back assistant parts via SSE.
+ *
+ * The backend is **stateless** — the client passes the full chat history
+ * on every call. Each yielded event has an ``event`` discriminator and a
+ * parsed ``data`` payload:
+ *
+ *   - ``session`` — once at the start; ``{session_id}``
+ *   - ``part``    — one of the MessagePart variants from ``./types.ts``
+ *   - ``error``   — fatal error; ``{detail, stage?}``
+ *   - ``done``    — turn complete; ``{finish_reason?}``
  *
  * Usage::
  *
- *   for await (const ev of streamChat("session-id")) {
- *     if (ev.event === "part") render(ev.data);
+ *   for await (const ev of streamChatMessage({text: "hi", history: prior})) {
+ *     if (ev.event === "part") appendPart(ev.data as MessagePart);
+ *     else if (ev.event === "error") showError((ev.data as any).detail);
  *   }
+ *
+ * The generator returns when the server emits ``done`` (or the stream
+ * closes). Errors during the network call throw an ``ApiError``.
  */
-export async function* streamChat(sessionId: string): AsyncGenerator<SseEvent> {
-  const r = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/stream`);
+export async function* streamChatMessage(
+  req: ChatRequest,
+): AsyncGenerator<SseEvent> {
+  const r = await fetch("/api/chat/message", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text: req.text,
+      history: req.history ?? [],
+      session_id: req.session_id,
+    }),
+  });
   if (!r.ok || !r.body) throw await apiError(r);
+
   const reader = r.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";

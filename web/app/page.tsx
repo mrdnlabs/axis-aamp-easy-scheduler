@@ -4,39 +4,56 @@ import * as React from "react";
 import { TopBar } from "@/components/shell/top-bar";
 import { Composer } from "@/components/chat/composer";
 import { MessageRow } from "@/components/chat/message-row";
-import { ToolCallCard } from "@/components/chat/tool-call-card";
-import { PipelineCard } from "@/components/chat/pipeline-card";
-import { ScheduleDiffCard } from "@/components/chat/schedule-diff-card";
-import { ApplyConfirmCard } from "@/components/chat/apply-confirm-card";
-import { SecureCaptureCard } from "@/components/chat/secure-capture-card";
-import { ArtifactPill } from "@/components/chat/artifact-pill";
+import { MessagePartView } from "@/components/chat/message-part-view";
 import { ArtifactPane } from "@/components/artifacts/artifact-pane";
 import { DayTemplateArtifact } from "@/components/artifacts/day-template-artifact";
 import { SecureCaptureModal } from "@/components/artifacts/secure-capture-modal";
-import type { DayTemplateArtifact as DayTemplateData } from "@/lib/types";
+import { useChat } from "@/lib/use-chat";
+import type { ArtifactKind, DayTemplateArtifact as DayTemplateData } from "@/lib/types";
 
 /**
- * The default route — ChAAMP's chat workspace.
+ * ChAAMP home — the live chat workspace.
  *
- * Static demo content. No LLM, no tool calls yet — every widget is
- * hand-fed sample data so we can land the visual rhythm before wiring
- * real streams. Per the handoff README's recommended order, the next
- * implementation step is to wire one real MCP tool call end-to-end so
- * the ToolCallCard renders from live data.
+ * Streams from the Python sidecar via the ``useChat`` hook. Each user
+ * send POSTs ``/api/chat/message`` with the full prior history (the
+ * server is stateless); the SSE response feeds parts into the message
+ * log as they arrive.
+ *
+ * Two contextual surfaces drive in from the chat:
+ *   - ``ArtifactPill`` parts open the right-side ArtifactPane.
+ *   - ``SecureCaptureCard`` parts (the LLM emits these when it needs a
+ *     credential) open the SecureCaptureModal.
+ *
+ * Both are managed at this layer so the chat hook stays focused on
+ * messages.
  */
 export default function HomePage() {
-  // Toggle the artifact pane to show/hide the right column. In a real
-  // implementation the assistant emits an artifact reference and this
-  // state lives at the app level; for the demo we control it locally.
-  const [showArtifact, setShowArtifact] = React.useState<boolean>(true);
-  // Secure-capture modal. In production, opens when the user clicks the
-  // "Set securely" button on a SecureCaptureCard; closes after the
-  // capture endpoint confirms the value was written to keyring.
-  const [captureOpen, setCaptureOpen] = React.useState<boolean>(false);
+  const { messages, isStreaming, error, send } = useChat(
+    "Hi — I'm ChAAMP. Tell me what you'd like to change about your schedule, " +
+      "or ask me about your devices. I'll show you the diff before I apply " +
+      "anything.",
+  );
+
+  // Artifact pane state. ``null`` means the pane is closed.
+  const [artifact, setArtifact] = React.useState<{
+    artifact: ArtifactKind;
+    key: string;
+  } | null>(null);
+
+  // Secure-capture modal state.
+  const [capture, setCapture] = React.useState<{
+    credentialKey: string;
+  } | null>(null);
+
+  // Auto-scroll the chat to the bottom whenever a new part lands.
+  const scrollRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages, isStreaming]);
 
   return (
-    // h-screen + overflow-hidden lock the page to the viewport so the
-    // composer stays pinned and the chat column scrolls independently.
     <div className="h-screen flex flex-col overflow-hidden bg-surface">
       <TopBar
         siteName="Lincoln Middle School"
@@ -47,22 +64,69 @@ export default function HomePage() {
       />
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
-        {/* Chat column — full width when artifact pane is closed.
-            overflow-hidden + min-h-0 are necessary on this flex parent so
-            the <main> inside can establish its own scroll region. */}
+        {/* Chat column */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
-          <main className="flex-1 min-h-0 overflow-y-auto">
+          <main ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
             <div className="w-full max-w-[820px] mx-auto px-6 pt-6 pb-4">
-              <DemoConversation
-                onOpenArtifact={() => setShowArtifact(true)}
-                artifactActive={showArtifact}
-                onSetSecurely={() => setCaptureOpen(true)}
-              />
+              {messages.map((m) => (
+                <MessageRow
+                  key={m.id}
+                  role={m.role}
+                  userInitials="MR"
+                  timestamp={formatTimestamp(m.ts)}
+                >
+                  {m.parts.length === 0 && m.role === "assistant" && isStreaming ? (
+                    <div className="flex items-center gap-2 text-13 text-slate-500">
+                      <span className="block w-3 h-3 rounded-full border-[1.5px] border-accent border-t-transparent animate-spin" />
+                      <span>Thinking…</span>
+                    </div>
+                  ) : (
+                    m.parts.map((part, i) => (
+                      <MessagePartView
+                        key={i}
+                        part={part}
+                        artifactActive={artifact}
+                        onOpenArtifact={(kind, key) =>
+                          setArtifact({ artifact: kind as ArtifactKind, key })
+                        }
+                        onOpenCapture={(credentialKey) =>
+                          setCapture({ credentialKey })
+                        }
+                      />
+                    ))
+                  )}
+                </MessageRow>
+              ))}
+
+              {/* Standalone error banner if the stream itself failed
+                  (vs an in-conversation error which renders as a text
+                  part inside the last assistant message). */}
+              {error && (
+                <div className="my-4 px-3.5 py-2.5 rounded-3 border border-critical/30 bg-critical-soft">
+                  <div className="text-13 font-semibold text-critical">
+                    Connection error
+                    {error.status !== undefined && (
+                      <span className="mono ml-2 text-12 font-medium text-slate-500">
+                        HTTP {error.status}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[12.5px] text-slate-700 mt-0.5">
+                    {error.detail}
+                  </div>
+                  <div className="text-[11.5px] text-slate-500 mt-1.5">
+                    Is{" "}
+                    <code className="mono bg-card px-1.5 py-0.5 rounded border border-slate-200">
+                      aamp-server
+                    </code>{" "}
+                    running in another terminal?
+                  </div>
+                </div>
+              )}
             </div>
           </main>
 
-          {/* Composer — pinned to the bottom of the chat column.
-              Sits outside <main>'s scroll region so it never leaves view. */}
+          {/* Composer — pinned to the bottom of the chat column. */}
           <div className="shrink-0 border-t border-slate-200 bg-surface">
             <Composer
               contextChips={["Lincoln MS", "This week", "12 devices · 4 zones"]}
@@ -71,203 +135,85 @@ export default function HomePage() {
                 "Add a fire drill at 2 PM next Tuesday",
                 "Onboard the new speaker at 192.168.1.123",
               ]}
+              onSend={(text) => void send(text)}
             />
           </div>
         </div>
 
-        {/* Artifact pane — right-side panel */}
-        {showArtifact && (
+        {/* Artifact pane — opens on demand */}
+        {artifact && (
           <ArtifactPane
-            kind="day_template"
-            title="Late-start Wednesday"
-            onClose={() => setShowArtifact(false)}
+            kind={artifact.artifact}
+            title={artifactTitle(artifact)}
+            onClose={() => setArtifact(null)}
           >
-            <DayTemplateArtifact data={DEMO_DAY_TEMPLATE} />
+            {artifact.artifact === "day_template" && (
+              <DayTemplateArtifact data={demoDayTemplate(artifact.key)} />
+            )}
+            {artifact.artifact !== "day_template" && (
+              <div className="text-13 text-slate-500">
+                <em>
+                  Artifact type ‘{artifact.artifact}’ not yet rendered.
+                  Add a component under{" "}
+                  <code className="mono">components/artifacts/</code>.
+                </em>
+              </div>
+            )}
           </ArtifactPane>
         )}
       </div>
 
-      {/* Secure-capture modal (rendered at root so it overlays everything) */}
+      {/* Secure-capture modal */}
       <SecureCaptureModal
-        open={captureOpen}
-        onOpenChange={setCaptureOpen}
-        credentialKey="device/default_password"
-        description="This is the password I'll set on every freshly-provisioned Axis device, and try first when authenticating against existing ones."
+        open={capture !== null}
+        onOpenChange={(open) => {
+          if (!open) setCapture(null);
+        }}
+        credentialKey={capture?.credentialKey}
+        onCaptured={() => {
+          // The next chat send will pick the new value up from the
+          // server's credential store; nothing client-side to do.
+          setCapture(null);
+        }}
       />
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Demo content — replaced by real LLM-streamed data later
+// Helpers
 // ---------------------------------------------------------------------------
 
-function DemoConversation({
-  onOpenArtifact,
-  artifactActive,
-  onSetSecurely,
-}: {
-  onOpenArtifact: () => void;
-  artifactActive: boolean;
-  onSetSecurely: () => void;
-}) {
-  return (
-    <>
-      <MessageRow role="assistant" timestamp="11:42 AM">
-        <p>
-          Hi Maya — welcome back. Today is <strong>Friday, May 22</strong>. Your{" "}
-          <em>Regular school day</em> template is active for Lincoln MS, with
-          the warning bell at 8:25 AM and dismissal at 2:30 PM. Nothing has
-          misfired this morning.
-        </p>
-        <p>
-          I can help you adjust the schedule, set up a one-off announcement, or
-          onboard a new speaker. What would you like to do?
-        </p>
-      </MessageRow>
-
-      <MessageRow role="user" userInitials="MR" timestamp="11:43 AM">
-        <p>
-          We&apos;re moving to late-start Wednesdays through June 11. First
-          bell shifts to 9:30 instead of 8:00; everything else shifts by the
-          same 90 minutes.
-        </p>
-      </MessageRow>
-
-      <MessageRow role="assistant" timestamp="11:43 AM">
-        <p>
-          Got it — I&apos;ll build a <strong>Late-start Wednesday</strong>{" "}
-          template that mirrors your regular day but shifts every event by 90
-          minutes, applied only on Wednesdays from{" "}
-          <span className="mono text-[13.5px]">2026-05-27</span> through{" "}
-          <span className="mono text-[13.5px]">2026-06-11</span>. Let me stage
-          that for you.
-        </p>
-
-        <ToolCallCard
-          call_id="tc_1"
-          name="stage_schedule_change"
-          summary='Created template "Late-start Wednesday" with 6 shifted events'
-          status="success"
-          duration_ms={840}
-          args={JSON.stringify(
-            {
-              template: "late_start_wednesday",
-              base: "regular_school_day",
-              shift_minutes: 90,
-              recurrence: { days: ["Wed"], from: "2026-05-27", to: "2026-06-11" },
-            },
-            null,
-            2,
-          )}
-          result='{"staging_id": "stg_a4f2", "summary": "6 changes staged: 1 add, 5 shifts"}'
-        />
-
-        <ScheduleDiffCard
-          title="Late-start Wednesdays"
-          effective="May 27 to June 11"
-          changes={[
-            { kind: "add", label: "Late-start Wednesday template", detail: "Active Wednesdays from May 27", time: "—", destination: "All" },
-            { kind: "shift", label: "Period 1 start", detail: "From 08:00 → 09:30 (Wed only)", time: "09:30", destination: "Elementary" },
-            { kind: "shift", label: "Period 1 end / passing", detail: "From 08:55 → 10:25", time: "10:25", destination: "Elementary" },
-            { kind: "shift", label: "Period 2 start", detail: "From 09:00 → 10:30", time: "10:30", destination: "Elementary" },
-            { kind: "shift", label: "Lunch chime", detail: "From 11:30 → 13:00", time: "13:00", destination: "Cafeteria" },
-            { kind: "shift", label: "Dismissal", detail: "From 14:30 → 16:00", time: "16:00", destination: "All" },
-          ]}
-        />
-
-        <p className="text-13 text-slate-600">
-          Want to see the full late-start day timeline?
-        </p>
-
-        <ArtifactPill
-          artifact="day_template"
-          title="Late-start Wednesday timeline"
-          subtitle="6 events · Wed 2026-05-27 to 2026-06-11"
-          active={artifactActive}
-          onClick={onOpenArtifact}
-        />
-      </MessageRow>
-
-      <MessageRow role="user" userInitials="MR" timestamp="11:45 AM">
-        <p>
-          Looks right. Also, can you onboard the new speaker that arrived this
-          morning? It&apos;s at 192.168.1.123.
-        </p>
-      </MessageRow>
-
-      <MessageRow role="assistant" timestamp="11:45 AM">
-        <p>I&apos;ll run the four-step onboarding pipeline against it.</p>
-
-        <PipelineCard
-          title="Onboarding 192.168.1.123"
-          steps={[
-            { name: "Inspect device", status: "success", detail: "AXIS C1710, fw 12.9.57, factory-default", duration_ms: 620 },
-            { name: "Authenticate", status: "success", detail: "Created root user with fleet password", duration_ms: 480 },
-            { name: "Install ACAP", status: "running", detail: "Uploading AXIS_Audio_Manager_Pro_5_1_34_aarch64.eap (1.2 MB)…" },
-            { name: "Point at AAM Pro", status: "pending" },
-          ]}
-        />
-      </MessageRow>
-
-      <MessageRow role="user" userInitials="MR" timestamp="11:46 AM">
-        <p>
-          Wait — I haven&apos;t configured the device fleet password yet. Can
-          you set one up?
-        </p>
-      </MessageRow>
-
-      <MessageRow role="assistant" timestamp="11:46 AM">
-        <p>
-          Sure — I&apos;ll prepare a secure capture for the fleet password.
-          The value goes straight to Windows Credential Manager; I never see
-          it.
-        </p>
-
-        <SecureCaptureCard
-          credentialKey="device/default_password"
-          description="This is the password I'll set on every freshly-provisioned Axis device, and try first when authenticating against existing ones."
-          onSetSecurely={onSetSecurely}
-          onCopyCli={() => {
-            navigator.clipboard?.writeText("aamp-set-credential device/default_password");
-          }}
-        />
-
-        <p className="text-13 text-slate-600 mt-1">
-          Once it&apos;s captured, I&apos;ll retry the onboarding from where it
-          left off.
-        </p>
-      </MessageRow>
-
-      <MessageRow role="assistant" timestamp="11:47 AM">
-        <p>
-          A quick example of the lighter apply-confirm pattern — when there&apos;s
-          only one change pending and the diff is obvious:
-        </p>
-        <ApplyConfirmCard
-          count={1}
-          summary="Set the Lincoln MS warning bell to start at 8:20 instead of 8:25"
-        />
-      </MessageRow>
-
-      <div className="time-axis my-2" aria-hidden="true" />
-    </>
-  );
+function formatTimestamp(iso: string): string {
+  try {
+    return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  } catch {
+    return iso;
+  }
 }
 
-const DEMO_DAY_TEMPLATE: DayTemplateData = {
-  kind: "day_template",
-  title: "Late-start Wednesday",
-  recurrence: "Weekly · Wed (May 27 → June 11)",
-  pending_changes: 6,
-  staging_id: "stg_a4f2",
-  events: [
-    { time: "09:30", label: "Period 1 start", destination: "Elementary classrooms", tone: "staged_shifted" },
-    { time: "10:25", label: "Period 1 end (5-min passing)", destination: "Elementary classrooms", tone: "staged_shifted" },
-    { time: "10:30", label: "Period 2 start", destination: "Elementary classrooms", tone: "staged_shifted" },
-    { time: "11:25", label: "Period 2 end (5-min passing)", destination: "Elementary classrooms", tone: "staged_shifted" },
-    { time: "11:30", label: "Period 3 start", destination: "Elementary classrooms", tone: "staged_shifted" },
-    { time: "13:00", label: "Lunch chime", destination: "Cafeteria", tone: "announce" },
-    { time: "16:00", label: "Dismissal", destination: "All zones", tone: "staged_shifted" },
-  ],
-};
+function artifactTitle(a: { artifact: ArtifactKind; key: string }): string {
+  // Once real artifact data flows from the server this lookup will use
+  // the actual title. For now we synthesize a placeholder.
+  if (a.artifact === "day_template") return a.key || "Day template";
+  return a.key || a.artifact;
+}
+
+/**
+ * Stand-in until real day-template data flows from the server. The
+ * artifact pane is rendered with this canned content when the chat
+ * emits an artifact_pill with kind="day_template".
+ */
+function demoDayTemplate(key: string): DayTemplateData {
+  return {
+    kind: "day_template",
+    title: key || "Day template (demo)",
+    recurrence: "Weekly",
+    events: [
+      { time: "08:00", label: "First bell", destination: "Elementary", tone: "regular" },
+      { time: "08:55", label: "Period 1 end (passing)", destination: "Elementary", tone: "regular" },
+      { time: "12:00", label: "Lunch chime", destination: "Cafeteria", tone: "announce" },
+      { time: "14:30", label: "Dismissal", destination: "All zones", tone: "regular" },
+    ],
+  };
+}
