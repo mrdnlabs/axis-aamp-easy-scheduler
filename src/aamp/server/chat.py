@@ -547,6 +547,19 @@ async def _run_turn(req: ChatRequest):
     # The try/finally guards the log close — even if the SSE generator
     # is dropped mid-stream (client disconnect, exception), the transcript
     # file gets flushed.
+    # Gemini sometimes returns ``STOP`` with an empty content envelope on
+    # very short user messages (e.g., "hi") against a large tool list —
+    # this is a known Gemini quirk, not a safety block. Observed
+    # empirically as ~50–67% empty rate on bare greetings against our
+    # ~14.5K-token prefix. We retry once with a brief inline nudge in
+    # the contents (temperature bump alone doesn't help — the model has
+    # decided there's nothing to say; we have to give it something to
+    # anchor on). The nudge is invisible to the user.
+    retry_nudge = (
+        "[system: respond to the user's message above. If they sent a brief "
+        "greeting, say hi and offer to help with their schedule.]"
+    )
+
     try:
         for round_idx in range(MAX_TOOL_ROUNDS):
             try:
@@ -565,7 +578,8 @@ async def _run_turn(req: ChatRequest):
                 })
                 return
 
-            # Capture token usage for this round (may include cached / thoughts).
+            # Account for THIS call's usage before any retry, so the
+            # retry path (which calls usage.add again) doesn't double-count.
             per_turn = usage.add(getattr(response, "usage_metadata", None))
             if per_turn:
                 log.write("token_usage", per_turn=per_turn, totals=usage.request_totals())
@@ -573,6 +587,52 @@ async def _run_turn(req: ChatRequest):
                     "per_turn": per_turn,
                     "request_totals": usage.request_totals(),
                 })
+
+            # If the first response is empty-STOP (the Gemini quirk),
+            # silently retry once with a small temperature bump. Only on
+            # round 0 — empties on later rounds usually indicate something
+            # genuinely wrong (e.g., malformed tool result) and silent
+            # retry would mask it.
+            if (
+                round_idx == 0
+                and response.candidates
+                and response.candidates[0].content
+                and not response.candidates[0].content.parts
+                and response.candidates[0].finish_reason
+                and response.candidates[0].finish_reason.name == "STOP"
+            ):
+                log.write("empty_response_retry",
+                          reason="STOP with empty parts on round 0",
+                          strategy="append nudge to contents")
+                # Build the retry contents: original list + a synthetic
+                # 'user' turn carrying the nudge. We use ``user`` role
+                # because Gemini doesn't expose a separate system-mid-
+                # conversation role — but the bracketed [system: ...]
+                # framing reads as instruction to the model.
+                retry_contents = list(contents) + [
+                    types.Content(role="user", parts=[types.Part(text=retry_nudge)])
+                ]
+                try:
+                    response = await client.aio.models.generate_content(
+                        model=DEFAULT_MODEL,
+                        contents=retry_contents,
+                        config=config,
+                    )
+                except Exception as e:
+                    # Fall through; the empty-branch below will surface
+                    # what we have (a stale empty response).
+                    log.write("empty_response_retry_failed",
+                              detail=f"{type(e).__name__}: {e}")
+                else:
+                    per_turn_retry = usage.add(getattr(response, "usage_metadata", None))
+                    if per_turn_retry:
+                        log.write("token_usage", per_turn=per_turn_retry,
+                                  totals=usage.request_totals(),
+                                  note="retry")
+                        yield _sse("usage", {
+                            "per_turn": per_turn_retry,
+                            "request_totals": usage.request_totals(),
+                        })
 
             candidate = response.candidates[0] if response.candidates else None
             finish_reason = (

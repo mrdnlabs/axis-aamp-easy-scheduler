@@ -91,6 +91,17 @@ def _parse_times(times: Iterable[Any]) -> list[tuple[int, int]]:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
+def get_local_date_time() -> str:
+    """Current local date and time on the chat server. Use to ground relative dates ("next Wednesday", "two weeks from now")."""
+    now = datetime.now().astimezone()
+    return json.dumps({
+        "iso": now.isoformat(timespec="seconds"),
+        "weekday": now.strftime("%A"),
+        "human": now.strftime("%A, %B %d, %Y at %I:%M %p %Z").replace("  ", " "),
+    }, indent=2)
+
+
+@mcp.tool()
 def list_sites() -> str:
     """List all AXIS Audio Manager Pro sites configured on this server."""
     with connect() as conn:
