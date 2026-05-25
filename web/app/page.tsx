@@ -35,7 +35,9 @@ export default function HomePage() {
   const [captureOpen, setCaptureOpen] = React.useState<boolean>(false);
 
   return (
-    <div className="min-h-screen flex flex-col">
+    // h-screen + overflow-hidden lock the page to the viewport so the
+    // composer stays pinned and the chat column scrolls independently.
+    <div className="h-screen flex flex-col overflow-hidden bg-surface">
       <TopBar
         siteName="Lincoln Middle School"
         serverStatus="reachable"
@@ -44,11 +46,13 @@ export default function HomePage() {
         userRole="Admin · Lincoln MS"
       />
 
-      <div className="flex-1 flex min-h-0">
-        {/* Chat column — full width when artifact pane is closed */}
-        <div className="flex-1 flex flex-col min-w-0">
-          <main className="flex-1 overflow-y-auto">
-            <div className="w-full max-w-[820px] mx-auto px-6 pt-6">
+      <div className="flex-1 flex min-h-0 overflow-hidden">
+        {/* Chat column — full width when artifact pane is closed.
+            overflow-hidden + min-h-0 are necessary on this flex parent so
+            the <main> inside can establish its own scroll region. */}
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+          <main className="flex-1 min-h-0 overflow-y-auto">
+            <div className="w-full max-w-[820px] mx-auto px-6 pt-6 pb-4">
               <DemoConversation
                 onOpenArtifact={() => setShowArtifact(true)}
                 artifactActive={showArtifact}
@@ -57,14 +61,18 @@ export default function HomePage() {
             </div>
           </main>
 
-          <Composer
-            contextChips={["Lincoln MS", "This week", "12 devices · 4 zones"]}
-            suggestions={[
-              "What's on the schedule for next Wednesday?",
-              "Add a fire drill at 2 PM next Tuesday",
-              "Onboard the new speaker at 192.168.1.123",
-            ]}
-          />
+          {/* Composer — pinned to the bottom of the chat column.
+              Sits outside <main>'s scroll region so it never leaves view. */}
+          <div className="shrink-0 border-t border-slate-200 bg-surface">
+            <Composer
+              contextChips={["Lincoln MS", "This week", "12 devices · 4 zones"]}
+              suggestions={[
+                "What's on the schedule for next Wednesday?",
+                "Add a fire drill at 2 PM next Tuesday",
+                "Onboard the new speaker at 192.168.1.123",
+              ]}
+            />
+          </div>
         </div>
 
         {/* Artifact pane — right-side panel */}
@@ -217,7 +225,7 @@ function DemoConversation({
         </p>
 
         <SecureCaptureCard
-          key="device/default_password"
+          credentialKey="device/default_password"
           description="This is the password I'll set on every freshly-provisioned Axis device, and try first when authenticating against existing ones."
           onSetSecurely={onSetSecurely}
           onCopyCli={() => {

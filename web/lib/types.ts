@@ -99,8 +99,15 @@ export interface ApplyConfirmPart {
 /** A credential the assistant needs the user to capture (out of context). */
 export interface SecureCapturePart {
   kind: "secure_capture";
-  /** account_id/field — e.g. "device/default_password". */
-  key: string;
+  /**
+   * account_id/field — e.g. "device/default_password".
+   *
+   * NOTE: This field is named ``credential_key``, not ``key``, because
+   * ``key`` is reserved by React's reconciler — it would never reach the
+   * SecureCaptureCard component. The wire protocol uses the same name
+   * as the React prop for consistency.
+   */
+  credential_key: string;
   /** Plain-language description ("Fleet password set on new devices…"). */
   description: string;
   /** Set true once a capture event has fired this session. */

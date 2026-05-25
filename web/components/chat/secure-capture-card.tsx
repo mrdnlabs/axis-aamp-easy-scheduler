@@ -5,7 +5,15 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import type { SecureCapturePart } from "@/lib/types";
 
-interface SecureCaptureCardProps extends Omit<SecureCapturePart, "kind"> {
+interface SecureCaptureCardProps
+  extends Omit<SecureCapturePart, "kind" | "credential_key"> {
+  /**
+   * account_id/field — e.g. ``"device/default_password"``.
+   *
+   * Named ``credentialKey`` (not ``key``) deliberately: ``key`` is reserved
+   * by React's reconciler and would never reach this component.
+   */
+  credentialKey: string;
   onSetSecurely?: () => void;
   onCopyCli?: () => void;
 }
@@ -27,7 +35,7 @@ interface SecureCaptureCardProps extends Omit<SecureCapturePart, "kind"> {
  *   - denied: user pasted a value in chat — show a warning to redirect them
  */
 export function SecureCaptureCard({
-  key: credentialKey,
+  credentialKey,
   description,
   captured,
   denied_because_value_offered,
