@@ -1,0 +1,203 @@
+/**
+ * Typed API client for the ChAAMP Python sidecar.
+ *
+ * Routes are proxied through Next.js (see ``next.config.js``) so this
+ * code can use relative URLs in both dev and prod. The sidecar lives at
+ * ``localhost:7331`` and the rewrite rule maps ``/api/*`` to it.
+ *
+ * IMPORTANT: the credential-capture endpoints accept a cleartext value
+ * over the wire. They are bound to 127.0.0.1 only on the server side;
+ * this client must NEVER be invoked from a non-loopback origin.
+ */
+
+// ---------------------------------------------------------------------------
+// Credential capture
+// ---------------------------------------------------------------------------
+
+export interface CaptureStartRequest {
+  account_id: string;
+  field: string;
+}
+
+export interface CaptureStartResponse {
+  token: string;
+  account_id: string;
+  field: string;
+  description: string;
+  expires_in_seconds: number;
+}
+
+export interface CaptureStatusResponse {
+  account_id: string;
+  field: string;
+  description: string;
+  expires_in_seconds: number;
+}
+
+export interface CaptureSubmitResponse {
+  captured: true;
+  account_id: string;
+  field: string;
+}
+
+/**
+ * Mint a capture token. Normally the LLM calls this via the MCP tool
+ * ``request_credential_capture`` and returns the token to the frontend;
+ * this helper is provided for tests and admin-driven flows.
+ */
+export async function startCapture(
+  req: CaptureStartRequest,
+): Promise<CaptureStartResponse> {
+  const r = await fetch("/api/credential-capture/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!r.ok) throw await apiError(r);
+  return r.json();
+}
+
+/**
+ * Fetch the current status of a capture token (account/field/expiry).
+ * Used by the SecureCaptureModal to render the countdown when opened
+ * with an inherited token.
+ */
+export async function captureStatus(token: string): Promise<CaptureStatusResponse> {
+  const r = await fetch(`/api/credential-capture/${encodeURIComponent(token)}/status`);
+  if (!r.ok) throw await apiError(r);
+  return r.json();
+}
+
+/**
+ * Submit a captured credential value. Single-use; the server consumes
+ * the token regardless of success. The value flows straight to the OS
+ * keyring on the server side; the LLM never sees it.
+ */
+export async function submitCapture(
+  token: string,
+  value: string,
+): Promise<CaptureSubmitResponse> {
+  const r = await fetch(`/api/credential-capture/${encodeURIComponent(token)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value }),
+  });
+  if (!r.ok) throw await apiError(r);
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
+// Chat
+// ---------------------------------------------------------------------------
+
+export interface SendMessageRequest {
+  text: string;
+  session_id?: string;
+}
+
+export interface SendMessageAck {
+  session_id: string;
+  accepted: boolean;
+}
+
+/**
+ * Submit a user message. The actual response parts arrive on the
+ * companion SSE stream (``streamChat``). Currently the backend is a
+ * stub — see ``src/aamp/server/chat.py``.
+ */
+export async function sendMessage(
+  req: SendMessageRequest,
+): Promise<SendMessageAck> {
+  const r = await fetch("/api/chat/message", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!r.ok) throw await apiError(r);
+  return r.json();
+}
+
+export interface SseEvent {
+  event: string;
+  data: unknown;
+}
+
+/**
+ * Open an SSE connection to the chat stream. Returns an AsyncGenerator
+ * yielding parsed events. The generator ends when the server sends
+ * ``event: done`` or the connection closes.
+ *
+ * Usage::
+ *
+ *   for await (const ev of streamChat("session-id")) {
+ *     if (ev.event === "part") render(ev.data);
+ *   }
+ */
+export async function* streamChat(sessionId: string): AsyncGenerator<SseEvent> {
+  const r = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/stream`);
+  if (!r.ok || !r.body) throw await apiError(r);
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // SSE messages are separated by a blank line.
+    let idx;
+    while ((idx = buffer.indexOf("\n\n")) >= 0) {
+      const raw = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      const ev = parseSseMessage(raw);
+      if (!ev) continue;
+      yield ev;
+      if (ev.event === "done") return;
+    }
+  }
+}
+
+function parseSseMessage(raw: string): SseEvent | null {
+  let event = "message";
+  const dataLines: string[] = [];
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("event:")) {
+      event = line.slice(6).trim();
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+  if (dataLines.length === 0) return null;
+  const dataStr = dataLines.join("\n");
+  try {
+    return { event, data: JSON.parse(dataStr) };
+  } catch {
+    return { event, data: dataStr };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Error envelope
+// ---------------------------------------------------------------------------
+
+export class ApiError extends Error {
+  status: number;
+  detail: string;
+  constructor(status: number, detail: string) {
+    super(`API ${status}: ${detail}`);
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+async function apiError(r: Response): Promise<ApiError> {
+  let detail = "request failed";
+  try {
+    const j = (await r.json()) as { detail?: string };
+    if (j.detail) detail = j.detail;
+  } catch {
+    // Body wasn't JSON — use the status text instead.
+    detail = r.statusText || detail;
+  }
+  return new ApiError(r.status, detail);
+}

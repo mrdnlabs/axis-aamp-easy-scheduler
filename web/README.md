@@ -11,14 +11,18 @@ The Next.js web app for ChAAMP. Implements the design system documented in [`../
 ## Setup
 
 ```powershell
+# In one terminal — the Python sidecar (credential capture + chat SSE)
+aamp-server                   # binds 127.0.0.1:7331
+
+# In another terminal — the Next.js dev server
 cd web
-npm install
-npm run dev
+npm install                   # first time only
+npm run dev                   # binds localhost:7330
 ```
 
-The app starts at [http://localhost:7330](http://localhost:7330).
+Open [http://localhost:7330](http://localhost:7330).
 
-The credential-capture endpoint (`/api/credential-capture/*`) is proxied to the Python sidecar at `http://127.0.0.1:7331` — start that before triggering the secure-capture flow. (Sidecar implementation: TODO.)
+The `/api/*` routes in the web client proxy to `http://127.0.0.1:7331/api/*` via the rewrite in `next.config.js`. The sidecar must be running before triggering the secure-capture flow or the chat stream.
 
 ## Layout
 
@@ -75,9 +79,9 @@ The web client assumes these MCP tools exist on the backend; some are not yet im
 |---|---|
 | `discover_axis_devices`, `inspect_axis_device`, `onboard_axis_device` | ✅ Implemented |
 | `prepare_credential_capture` | ✅ Implemented (returns CLI command) |
-| `request_credential_capture` | ⬜ TODO — drives the modal capture flow |
-| `list_credentials` | ⬜ TODO — backed by `credentials.list_accounts()` |
-| `audit_log` | ⬜ TODO — reads `~/.aamp_audit.log` |
+| `request_credential_capture` | ✅ Implemented — mints a token + URL for the modal |
+| `list_credentials` | ✅ Implemented — returns masked metadata |
+| `audit_log` | ✅ Implemented — reads `~/.aamp_audit.log` |
 | `stage_schedule_change`, `apply_staged_changes`, `discard_staged_changes` | ⬜ TODO — diff-based mutations |
 
 See the design system docs for the visual contract these tools' results should match.

@@ -11,6 +11,9 @@ dependencies = [
     "google-genai>=2.5",
     "zeroconf>=0.131",
     "keyring>=24",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sse-starlette>=2.1",
 ]
 
 [project.optional-dependencies]
@@ -31,3 +34,4 @@ aamp-set-credential = "aamp.credentials_cli:set_main"
 aamp-list-credentials = "aamp.credentials_cli:list_main"
 aamp-delete-credential = "aamp.credentials_cli:delete_main"
 aamp-migrate-credentials = "aamp.credentials_cli:migrate_main"
+aamp-server = "aamp.server.app:main"

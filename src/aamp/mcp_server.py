@@ -965,6 +965,147 @@ def _format_onboarding_result(r: "_onboard.OnboardingResult") -> list[str]:
 
 
 @mcp.tool()
+def list_credentials() -> str:
+    """List every credential currently stored — VALUES NEVER RETURNED.
+
+    Surfaces metadata only: account_id/field, description (from the
+    canonical secret table), and whether each slot is populated. The
+    web client's Credentials view uses this to render the masked table.
+
+    Returns:
+        Markdown table with one row per known credential slot. The
+        "stored" column shows ``True`` / ``False``; the value column
+        is always ``********`` and there is no way to retrieve the
+        actual value through this tool or any other MCP tool.
+
+    Implementation guarantee: the returned string contains no secret
+    values. The credential store's audit log records every access.
+    """
+    from .credentials import KNOWN_SECRETS, get_credential_store
+    store = get_credential_store()
+    lines = ["| Account / Field | Description | Stored | Value |",
+             "|---|---|---|---|"]
+    for s in KNOWN_SECRETS:
+        present = store.get(s.account_id, s.field) is not None
+        lines.append(
+            f"| `{s.account_id}/{s.field}` | {s.description} | "
+            f"{'yes' if present else 'no'} | `********` |"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def audit_log(limit: int = 50, op: Optional[str] = None,
+              principal: Optional[str] = None) -> str:
+    """Read the credential-access audit log.
+
+    Returns the most recent entries from ``~/.aamp_audit.log`` as a
+    markdown table. Filterable by op (get / set / delete / list /
+    capture_start / capture_submit) and by principal.
+
+    Args:
+        limit: maximum number of rows to return (default 50).
+        op: optional filter — e.g. ``"capture_submit"`` to see only
+            successful credential captures.
+        principal: optional filter — e.g. ``"process"`` or ``"llm"``.
+
+    Returns:
+        Markdown table with timestamp, op, account/field, principal,
+        decision, and reason. No credential values are ever included.
+    """
+    import json
+    from pathlib import Path
+    log_path = Path.home() / ".aamp_audit.log"
+    if not log_path.exists():
+        return "No audit log entries yet. (`~/.aamp_audit.log` does not exist.)"
+    rows: list[dict[str, str]] = []
+    try:
+        for line in log_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if op and e.get("op") != op:
+                continue
+            if principal and e.get("principal") != principal:
+                continue
+            rows.append(e)
+    except OSError as exc:
+        return f"Could not read audit log: {exc}"
+    if not rows:
+        filt = []
+        if op:
+            filt.append(f"op={op!r}")
+        if principal:
+            filt.append(f"principal={principal!r}")
+        return f"No audit-log entries matching filters: {', '.join(filt) or '(none)'}."
+    rows = rows[-limit:]
+    lines = ["| Timestamp | Op | Account/Field | Principal | Decision | Reason |",
+             "|---|---|---|---|---|---|"]
+    for e in rows:
+        acct = f"{e.get('account_id','')}/{e.get('field','')}".rstrip("/")
+        lines.append(
+            f"| `{e.get('ts','')}` | `{e.get('op','')}` | `{acct}` | "
+            f"{e.get('principal','')} | {e.get('decision','')} | "
+            f"{e.get('reason','') or '—'} |"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def request_credential_capture(account_id: str, field: str) -> str:
+    """Mint a one-time URL for the user to enter a credential value SECURELY.
+
+    Use this when a tool returns a "credentials not configured" error and
+    the user has a web UI open. The returned JSON includes a session
+    token + URL that the web client's SecureCaptureModal opens. The user
+    types the value into a form on that URL; the value goes directly to
+    the OS keyring; the assistant never sees it.
+
+    For CLI-only users, fall back to ``prepare_credential_capture`` which
+    returns the literal ``aamp-set-credential`` command instead.
+
+    Args:
+        account_id: the canonical account id (e.g. ``"device"``).
+        field: the canonical field name (e.g. ``"default_password"``).
+            See ``KNOWN_SECRETS`` in ``src/aamp/credentials.py`` for the
+            full table.
+
+    Returns:
+        A JSON object with ``token``, ``url``, ``description``, and
+        ``expires_in_seconds``. Relay the URL to the user verbatim
+        and DO NOT ask them to type the password in chat. Sample::
+
+            {
+              "token": "Mk9-bxJoExqd...",
+              "url": "/api/credential-capture/Mk9-bxJoExqd...",
+              "description": "Fleet password set on freshly...",
+              "expires_in_seconds": 600
+            }
+    """
+    import json
+    from .server.capture import start_capture
+    try:
+        rec = start_capture(account_id, field)
+    except ValueError as e:
+        # Unknown slot — tell the LLM the canonical alternatives.
+        return prepare_credential_capture(account_id, field)
+    except Exception as e:
+        return f"Failed to start capture: {type(e).__name__}: {e}"
+    return json.dumps({
+        "token": rec.token,
+        "url": f"/api/credential-capture/{rec.token}",
+        "account_id": rec.account_id,
+        "field": rec.field,
+        "description": rec.description,
+        "expires_in_seconds": 600,
+    }, indent=2)
+
+
+@mcp.tool()
 def prepare_credential_capture(account_id: str, field: str) -> str:
     """Return the instructions the user should follow to set or update a credential.
 

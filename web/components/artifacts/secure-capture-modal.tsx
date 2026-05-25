@@ -2,25 +2,31 @@
 
 import * as React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Lock, Check, X, Copy } from "lucide-react";
+import { Lock, Check, X, Copy, AlertCircle } from "lucide-react";
 import { Button, IconButton } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
+import { startCapture, submitCapture, ApiError } from "@/lib/api";
 
 interface SecureCaptureModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Canonical credential identifier — e.g. ``"device/default_password"``. */
-  credentialKey: string;
-  description: string;
-  /** Short-lived capture-session token from the backend (display-only). */
-  sessionToken?: string;
-  /** Seconds remaining on the session-token expiry. */
-  expiresInSeconds?: number;
-  /** Callback fired after the modal posts to the local capture endpoint. */
-  onCaptured?: () => void;
+  /**
+   * Two ways to drive the modal:
+   *   (a) Pass ``credentialKey`` — the modal mints a fresh capture token
+   *       on open by calling ``/api/credential-capture/start``.
+   *   (b) Pass ``token`` — the modal uses an existing token (typical when
+   *       the LLM has already called ``request_credential_capture``).
+   * If both are supplied, ``token`` wins.
+   */
+  credentialKey?: string;
+  token?: string;
+  /** Optional description override (shown on the lock chip). */
+  description?: string;
+  /** Callback fired after the keyring write succeeds. */
+  onCaptured?: (info: { account_id: string; field: string }) => void;
 }
 
-type Phase = "input" | "working" | "captured";
+type Phase = "loading" | "input" | "working" | "captured" | "error";
 
 /**
  * The full-page credential capture modal.
@@ -52,46 +58,98 @@ export function SecureCaptureModal({
   open,
   onOpenChange,
   credentialKey,
-  description,
-  sessionToken = "cap_4f81a2…7d",
-  expiresInSeconds = 293,
+  token: tokenProp,
+  description: descOverride,
   onCaptured,
 }: SecureCaptureModalProps) {
-  const [phase, setPhase] = React.useState<Phase>("input");
+  const [phase, setPhase] = React.useState<Phase>("loading");
   const [pwd, setPwd] = React.useState("");
   const [pwd2, setPwd2] = React.useState("");
+  const [token, setToken] = React.useState<string | null>(tokenProp ?? null);
+  const [slot, setSlot] = React.useState<{
+    account_id: string;
+    field: string;
+    description: string;
+    expires_in_seconds: number;
+  } | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
 
-  // reset state when modal opens
+  // On open: mint a token (or fetch one if provided), then transition to input.
   React.useEffect(() => {
-    if (open) {
-      setPhase("input");
-      setPwd("");
-      setPwd2("");
-      setTimeout(() => inputRef.current?.focus(), 80);
-    }
-  }, [open]);
+    if (!open) return;
+    let cancelled = false;
+    setPhase("loading");
+    setPwd("");
+    setPwd2("");
+    setError(null);
+
+    (async () => {
+      try {
+        if (tokenProp) {
+          // Caller provided a token — we trust them and use it as-is.
+          setToken(tokenProp);
+          // Status fetch would go here in a future revision so the modal
+          // shows the live countdown. For now we use defaults.
+          setSlot({
+            account_id: parseCredentialKey(credentialKey ?? "").account_id,
+            field: parseCredentialKey(credentialKey ?? "").field,
+            description: descOverride ?? "",
+            expires_in_seconds: 600,
+          });
+        } else if (credentialKey) {
+          const { account_id, field } = parseCredentialKey(credentialKey);
+          const res = await startCapture({ account_id, field });
+          if (cancelled) return;
+          setToken(res.token);
+          setSlot({
+            account_id: res.account_id,
+            field: res.field,
+            description: descOverride ?? res.description,
+            expires_in_seconds: res.expires_in_seconds,
+          });
+        } else {
+          throw new Error("SecureCaptureModal requires credentialKey or token");
+        }
+        if (cancelled) return;
+        setPhase("input");
+        setTimeout(() => inputRef.current?.focus(), 80);
+      } catch (e) {
+        if (cancelled) return;
+        setPhase("error");
+        setError(e instanceof ApiError ? e.detail : String(e));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, credentialKey, tokenProp, descOverride]);
 
   const strong = pwd.length >= 12 && /[A-Z]/.test(pwd) && /[0-9]/.test(pwd);
   const matches = pwd.length > 0 && pwd === pwd2;
   const canSubmit = strong && matches && phase === "input";
 
-  const cli = `aamp-set-credential ${credentialKey}`;
+  const cli = `aamp-set-credential ${
+    slot ? `${slot.account_id}/${slot.field}` : credentialKey ?? ""
+  }`;
 
-  function submit() {
+  async function submit() {
+    if (!token) return;
     setPhase("working");
-    // Demo behavior: simulate the POST + write-to-keyring round-trip.
-    // Replace this block with a real fetch() to /api/credential-capture
-    // when the sidebar endpoint exists.
-    setTimeout(() => {
+    try {
+      const res = await submitCapture(token, pwd);
       setPhase("captured");
       setPwd("");
       setPwd2("");
       setTimeout(() => {
-        onCaptured?.();
+        onCaptured?.({ account_id: res.account_id, field: res.field });
         onOpenChange(false);
       }, 1400);
-    }, 1000);
+    } catch (e) {
+      setPhase("error");
+      setError(e instanceof ApiError ? e.detail : String(e));
+    }
   }
 
   return (
@@ -157,8 +215,12 @@ export function SecureCaptureModal({
                 <div className="text-11 font-semibold text-slate-500 uppercase tracking-[0.06em]">
                   Set credential
                 </div>
-                <div className="mono text-18 font-semibold text-ink mt-0.5">{credentialKey}</div>
-                <div className="text-13 text-slate-600 mt-1 leading-relaxed">{description}</div>
+                <div className="mono text-18 font-semibold text-ink mt-0.5">
+                  {slot ? `${slot.account_id}/${slot.field}` : credentialKey ?? "…"}
+                </div>
+                <div className="text-13 text-slate-600 mt-1 leading-relaxed">
+                  {slot?.description ?? descOverride ?? "Loading…"}
+                </div>
               </div>
             </div>
           </div>
@@ -176,12 +238,32 @@ export function SecureCaptureModal({
                 <div className="text-[11.5px] text-slate-500 mt-1">
                   Session token{" "}
                   <span className="mono bg-card px-1.5 py-px rounded-1 border border-slate-200">
-                    {sessionToken}
+                    {token ? `${token.slice(0, 8)}…${token.slice(-4)}` : "minting…"}
                   </span>{" "}
-                  · expires in {formatExpiry(expiresInSeconds)}
+                  · expires in {formatExpiry(slot?.expires_in_seconds ?? 600)}
                 </div>
               </div>
             </div>
+
+            {phase === "loading" && (
+              <div className="py-6 flex flex-col items-center gap-2.5">
+                <span className="block w-6 h-6 rounded-full border-[2px] border-accent border-t-transparent animate-spin" />
+                <div className="text-13 text-slate-600">Preparing secure capture…</div>
+              </div>
+            )}
+
+            {phase === "error" && (
+              <div className="flex gap-3 items-start px-4 py-3.5 bg-critical-soft border border-critical/30 rounded-3">
+                <AlertCircle size={18} strokeWidth={2} className="text-critical shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <div className="text-13 font-semibold text-critical">Capture failed</div>
+                  <div className="text-[12.5px] text-slate-700 mt-0.5">
+                    {error ?? "Unknown error."} Use the terminal fallback below, or
+                    close and retry.
+                  </div>
+                </div>
+              </div>
+            )}
 
             {phase === "input" && (
               <>
@@ -235,8 +317,11 @@ export function SecureCaptureModal({
                   </div>
                   <div className="text-[12.5px] text-emerald-700 mt-0.5">
                     ChAAMP can now use{" "}
-                    <span className="mono">{credentialKey}</span> for its next
-                    tool call. The value never entered this conversation.
+                    <span className="mono">
+                      {slot ? `${slot.account_id}/${slot.field}` : credentialKey}
+                    </span>{" "}
+                    for its next tool call. The value never entered this
+                    conversation.
                   </div>
                 </div>
               </div>
@@ -389,4 +474,11 @@ function formatExpiry(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/** Split ``"device/default_password"`` into ``{account_id, field}``. */
+function parseCredentialKey(key: string): { account_id: string; field: string } {
+  const ix = key.indexOf("/");
+  if (ix < 0) return { account_id: key, field: "" };
+  return { account_id: key.slice(0, ix), field: key.slice(ix + 1) };
 }
