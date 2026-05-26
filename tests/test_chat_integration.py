@@ -32,6 +32,28 @@ DISCOVERY_TOOLS = {"discover_axis_devices", "test_axis_discovery_methods"}
 # ---------------------------------------------------------------------------
 
 
+def test_auth_me_live_socket(server_url):
+    """Hit /api/auth/me against the LIVE server (not TestClient) and
+    confirm peer identification works end-to-end. The test process is
+    the same Windows user running the server, so we expect a non-null
+    username and is_admin=True. If this fails, the peer-identity
+    middleware is broken in a way the in-process tests can't catch."""
+    import json
+    import urllib.request
+    with urllib.request.urlopen(f"{server_url}/api/auth/me", timeout=5) as r:
+        assert r.status == 200
+        body = json.loads(r.read().decode("utf-8"))
+    assert body["username"], (
+        f"Live peer-identity probe returned no username — middleware "
+        f"can't see the connecting socket. Got: {body}"
+    )
+    assert body["is_admin"] is True, (
+        f"Live test runs as the user that started the server, so "
+        f"is_admin should be True. Got: {body}"
+    )
+    assert body["source"] == "windows_peer"
+
+
 def test_m1_greeting(chat):
     """M1: bare 'hi' must produce a real response.
 
