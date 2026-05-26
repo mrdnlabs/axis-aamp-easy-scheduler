@@ -12,6 +12,8 @@ import { DiscoveryArtifact } from "@/components/artifacts/discovery-artifact";
 import { SecureCaptureModal } from "@/components/artifacts/secure-capture-modal";
 import { GeminiSetupCard } from "@/components/setup/gemini-setup-card";
 import { SettingsPanel } from "@/components/panels/settings-panel";
+import { CredentialsPanel } from "@/components/panels/credentials-panel";
+import { AuditLogPanel } from "@/components/panels/audit-log-panel";
 import { useChat, artifactStoreKey } from "@/lib/use-chat";
 import { useConfigStatus } from "@/lib/use-config-status";
 import { useSiteOverview } from "@/lib/use-site-overview";
@@ -272,8 +274,27 @@ export default function HomePage() {
           if (!open) setOpenPanel(null);
         }}
       />
-      {/* Credentials and Audit panels arrive in C3. For now their
-          menu items open nothing — guarded by the conditional above. */}
+      <CredentialsPanel
+        open={openPanel === "credentials"}
+        onOpenChange={(open) => {
+          if (!open) setOpenPanel(null);
+        }}
+        onRotate={(credentialKey) => {
+          // Closing the panel before opening the capture modal keeps
+          // the z-stack clean — only one dialog at a time. The
+          // SecureCaptureModal's ``onCaptured`` callback handles the
+          // post-success cleanup; the user can reopen the
+          // credentials panel to confirm the rotation landed.
+          setOpenPanel(null);
+          setCapture({ credentialKey });
+        }}
+      />
+      <AuditLogPanel
+        open={openPanel === "audit"}
+        onOpenChange={(open) => {
+          if (!open) setOpenPanel(null);
+        }}
+      />
     </div>
   );
 }
