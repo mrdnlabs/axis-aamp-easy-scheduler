@@ -11,6 +11,31 @@
  */
 
 // ---------------------------------------------------------------------------
+// Current user (Windows peer-identity)
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of the ``/api/auth/me`` probe. The sidecar identifies the
+ * connecting Windows user from the loopback TCP socket and reports
+ * back. ``username`` is ``null`` only when the identification itself
+ * failed (TCP table race) — the frontend treats that the same as
+ * not-admin.
+ */
+export interface CurrentUser {
+  username: string | null;
+  sid: string | null;
+  is_admin: boolean;
+  source: "windows_peer" | string;
+  required_group_sid: string;
+}
+
+export async function getCurrentUser(): Promise<CurrentUser> {
+  const r = await fetch("/api/auth/me");
+  if (!r.ok) throw await apiError(r);
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
 // Config status
 // ---------------------------------------------------------------------------
 

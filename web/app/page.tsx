@@ -14,9 +14,11 @@ import { GeminiSetupCard } from "@/components/setup/gemini-setup-card";
 import { SettingsPanel } from "@/components/panels/settings-panel";
 import { CredentialsPanel } from "@/components/panels/credentials-panel";
 import { AuditLogPanel } from "@/components/panels/audit-log-panel";
+import { AccessDeniedScreen } from "@/components/auth/access-denied-screen";
 import { useChat, artifactStoreKey } from "@/lib/use-chat";
 import { useConfigStatus } from "@/lib/use-config-status";
 import { useSiteOverview } from "@/lib/use-site-overview";
+import { useCurrentUser } from "@/lib/use-current-user";
 import type { ArtifactKind } from "@/lib/types";
 
 type PanelKind = "settings" | "credentials" | "audit";
@@ -38,6 +40,11 @@ type PanelKind = "settings" | "credentials" | "audit";
  * messages.
  */
 export default function HomePage() {
+  // Auth gate runs first — if the connecting Windows user isn't an
+  // admin (or peer identification failed), the access-denied screen
+  // takes over the whole viewport and the chat hook never even runs.
+  const { user, isLoading: userLoading } = useCurrentUser();
+
   const { messages, isStreaming, error, tokenTotals, artifacts, send } = useChat(
     "Hi — I'm ChAAMP. Tell me what you'd like to change about your schedule, " +
       "or ask me about your devices. I'll show you the diff before I apply " +
@@ -90,12 +97,25 @@ export default function HomePage() {
     wasStreamingRef.current = isStreaming;
   }, [isStreaming, refreshSiteOverview]);
 
+  // Auth-gate the entire app. Before we know who the user is we
+  // render nothing (very brief flash on cold load). If we learn the
+  // user is not admin OR identification failed, take over the whole
+  // viewport with the access-denied screen. Only admins fall through
+  // to the chat workspace + setup gate.
+  if (userLoading) {
+    return <div className="h-screen bg-surface" aria-busy="true" />;
+  }
+  if (!user || !user.is_admin) {
+    return <AccessDeniedScreen user={user} />;
+  }
+
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-surface">
       <TopBar
         siteName={siteOverview?.site_label ?? null}
         serverStatus="reachable"
         tokenTotals={tokenTotals}
+        username={user.username}
         onNavigate={(route) => setOpenPanel(route)}
       />
 

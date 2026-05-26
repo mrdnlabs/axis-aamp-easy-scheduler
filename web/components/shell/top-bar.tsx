@@ -24,6 +24,12 @@ interface TopBarProps {
   serverStatus: "reachable" | "degraded" | "offline";
   /** Running session token totals; hidden when ``turns === 0``. */
   tokenTotals?: TokenTotals;
+  /**
+   * The signed-in Windows user — ``DOMAIN\\username``. Pass ``null``
+   * if not yet known. We show this so the operator can see at a
+   * glance which Windows account is acting.
+   */
+  username?: string | null;
   onNewChat?: () => void;
   onOpenHistory?: () => void;
   /**
@@ -52,6 +58,7 @@ export function TopBar({
   siteName,
   serverStatus,
   tokenTotals,
+  username,
   onNewChat,
   onOpenHistory,
   onNavigate,
@@ -82,7 +89,48 @@ export function TopBar({
       </IconButton>
 
       <AppMenu onNavigate={onNavigate} />
+
+      {username && <UserChip username={username} />}
     </header>
+  );
+}
+
+/**
+ * Minimal "you are signed in as X" indicator. We deliberately don't
+ * show role/title — ChAAMP serves the organization. Just enough to
+ * confirm which Windows account is acting.
+ */
+function UserChip({ username }: { username: string }) {
+  // Drop the DOMAIN\ prefix in the visible label — the tooltip keeps
+  // the full form for forensics.
+  const display = username.includes("\\")
+    ? username.split("\\").pop() ?? username
+    : username;
+  // Two initials from the visible-name segment.
+  const initials = display
+    .split(/[._\-\s]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((s) => s[0].toUpperCase())
+    .join("") || display.slice(0, 2).toUpperCase();
+  return (
+    <div
+      className={cn(
+        "inline-flex items-center gap-2 h-8 pl-1 pr-2.5 rounded-2",
+        "bg-card border border-slate-200 cursor-default",
+      )}
+      title={`Signed in via Windows: ${username}. Restart your browser as a different user to switch identity.`}
+    >
+      <span
+        className={cn(
+          "inline-flex items-center justify-center w-[22px] h-[22px] rounded-[7px]",
+          "bg-audio-gradient text-white font-semibold text-[10px]",
+        )}
+      >
+        {initials}
+      </span>
+      <span className="text-12 font-medium text-slate-700">{display}</span>
+    </div>
   );
 }
 

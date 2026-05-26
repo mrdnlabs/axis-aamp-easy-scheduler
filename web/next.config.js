@@ -6,30 +6,31 @@ const nextConfig = {
     typedRoutes: true,
   },
   async rewrites() {
-    // Proxy every /api/* path to the Python sidecar (aamp-server) running
-    // at 127.0.0.1:7331. The sidecar mounts ALL its FastAPI routers under
-    // /api/* — so the destination must keep the /api/ prefix in the
-    // forwarded URL or every request 404s.
+    // Single catch-all: forward every /api/* path to the Python
+    // sidecar (aamp-server) at 127.0.0.1:7331. The sidecar mounts
+    // ALL its FastAPI routers under /api/* so the destination keeps
+    // the prefix.
     //
-    // Routes proxied:
-    //   /api/credential-capture/start         — POST: mint a capture token
-    //   /api/credential-capture/{token}/status — GET: countdown + slot info
-    //   /api/credential-capture/{token}        — POST: submit value (single-use)
-    //   /api/chat/message                     — POST: enqueue a chat message
-    //   /api/chat/{session_id}/stream         — GET: SSE message-parts stream
-    //   /api/config/status                    — GET: credential rollup
+    // Why catch-all over an explicit list: every new sidecar route
+    // would otherwise need a matching rewrite entry, and the
+    // failure mode (404 from Next.js's own routing) is easy to miss
+    // in dev. The sidecar's PeerIdentityMiddleware enforces auth
+    // uniformly, so a permissive proxy doesn't widen the attack
+    // surface.
+    //
+    // Routes currently served by the sidecar:
+    //   /api/credential-capture/*  capture token mint + submit
+    //   /api/chat/message          chat SSE
+    //   /api/config/status         credential rollup
+    //   /api/settings/*            tunable runtime settings
+    //   /api/credentials           known credential slots (read-only)
+    //   /api/audit                 audit log
+    //   /api/site-overview         intent-doc-derived site label
+    //   /api/auth/me               connecting-user identity
     return [
       {
-        source: "/api/credential-capture/:path*",
-        destination: "http://127.0.0.1:7331/api/credential-capture/:path*",
-      },
-      {
-        source: "/api/chat/:path*",
-        destination: "http://127.0.0.1:7331/api/chat/:path*",
-      },
-      {
-        source: "/api/config/:path*",
-        destination: "http://127.0.0.1:7331/api/config/:path*",
+        source: "/api/:path*",
+        destination: "http://127.0.0.1:7331/api/:path*",
       },
     ];
   },
