@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +36,16 @@ from .credentials import CredentialStore
 
 
 DEFAULT_AUDIT_PATH = Path.home() / ".aamp_audit.log"
+
+
+# Request-scoped principal. The web sidecar's PeerIdentityMiddleware
+# sets this to the connecting Windows user at the top of each request;
+# AuditingStore.get/set/delete and other call sites pick it up through
+# ``record(principal=None)`` — see the ``record()`` resolution below.
+#
+# CLI / MCP-server callers never set the contextvar, so they get the
+# default ``"process"`` — same behavior as before.
+principal_context: ContextVar[str] = ContextVar("aamp_audit_principal", default="process")
 
 
 @dataclass
@@ -48,10 +59,18 @@ class AuditLog:
         account_id: str,
         field: str = "",
         *,
-        principal: str = "process",
+        principal: Optional[str] = None,
         decision: str = "ok",
         reason: str = "",
     ) -> None:
+        # Resolution order for principal:
+        #   1. Explicit kwarg passed by the caller (e.g., the capture
+        #      endpoint may want to attribute differently).
+        #   2. ``principal_context`` ContextVar — set by the web sidecar's
+        #      auth middleware to the connecting Windows user.
+        #   3. ``"process"`` default — CLI / MCP-server invocations.
+        if principal is None:
+            principal = principal_context.get()
         entry = {
             "ts": datetime.now().isoformat(timespec="milliseconds"),
             "op": op,

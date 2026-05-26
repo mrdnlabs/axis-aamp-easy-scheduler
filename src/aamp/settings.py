@@ -83,6 +83,18 @@ DEFAULTS: tuple[SettingDef, ...] = (
         ),
         category="security",
     ),
+    SettingDef(
+        key="auth_required_group_sid",
+        default="S-1-5-32-544",
+        description=(
+            "SID of the Windows group whose members are allowed to use ChAAMP. "
+            "Default S-1-5-32-544 = BUILTIN\\Administrators (matches AAM Pro's "
+            "default admin policy). Change to broaden access — e.g., "
+            "S-1-5-32-545 = BUILTIN\\Users would admit every signed-in Windows "
+            "account. Read on every request, so changes take effect immediately."
+        ),
+        category="security",
+    ),
 )
 
 

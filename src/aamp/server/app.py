@@ -32,11 +32,30 @@ WEB_ORIGIN_DEV = "http://localhost:7330"
 
 def create_app() -> FastAPI:
     """Construct the FastAPI app with all routes mounted."""
+    # ChAAMP authenticates users via Windows peer-identity on the
+    # loopback socket. That mechanism is Windows-only. The sidecar
+    # refuses to start anywhere else rather than silently degrading
+    # into a no-auth state. CI / contributor environments on other
+    # OSes should test Python modules directly, not run the sidecar.
+    if sys.platform != "win32":
+        raise RuntimeError(
+            "ChAAMP requires Windows for peer-identity authentication. "
+            f"Detected sys.platform={sys.platform!r}. The sidecar will "
+            "not start. Run on Windows, or test the underlying Python "
+            "modules directly without spinning up uvicorn."
+        )
+
+    # Imports that ultimately reach the Win32 modules must happen
+    # AFTER the platform check, so the runtime error fires before any
+    # confusing ``ModuleNotFoundError: win32api`` traceback would.
+    from . import auth_middleware, auth_routes
+
     app = FastAPI(
         title="ChAAMP sidecar",
         description=(
             "Credential capture + chat SSE for the ChAAMP web client. "
-            "Binds to 127.0.0.1 only — never expose remotely."
+            "Binds to 127.0.0.1 only — never expose remotely. "
+            "Authenticates via Windows peer identity on the loopback socket."
         ),
         version="0.1.0",
     )
@@ -44,9 +63,14 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=[WEB_ORIGIN_DEV],
         allow_credentials=False,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["Content-Type"],
     )
+    # Peer-identity gate sits after CORS so preflight responses get
+    # the right headers, and before all routes so it covers every
+    # incoming request uniformly.
+    app.add_middleware(auth_middleware.PeerIdentityMiddleware)
+
     # Routes live under /api so the Next.js dev-server rewrite rule
     # (next.config.js: /api/credential-capture/* -> :7331) lines up.
     app.include_router(capture.router, prefix="/api")
@@ -56,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(credentials.router, prefix="/api")
     app.include_router(audit.router, prefix="/api")
     app.include_router(site_overview.router, prefix="/api")
+    app.include_router(auth_routes.router, prefix="/api")
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:

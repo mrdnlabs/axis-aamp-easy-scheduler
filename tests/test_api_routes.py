@@ -41,14 +41,15 @@ def test_settings_list_returns_all_known(client: TestClient) -> None:
     assert r.status_code == 200, r.text
     rows = r.json()
     assert isinstance(rows, list)
-    # We have 4 known settings; lock in the count so a future addition
-    # is a deliberate change (update both the count + the keys).
+    # Lock in the set of known settings so a future addition is a
+    # deliberate change (update both the count + the keys).
     keys = sorted(row["key"] for row in rows)
     assert keys == sorted([
         "max_history_turns",
         "default_discovery_timeout_seconds",
         "capture_token_ttl_seconds",
         "capture_rate_limit_per_minute",
+        "auth_required_group_sid",
     ]), f"got {keys}"
     # Shape check: each row carries enough for the UI to render.
     for row in rows:
@@ -204,3 +205,91 @@ def test_site_overview_explicit_site_id(client: TestClient) -> None:
     assert body["site_id"] == 999
     assert body["source"] == "missing"
     assert body["site_label"] is None
+
+
+# ---------------------------------------------------------------------------
+# /api/auth/me + peer-identity middleware
+# ---------------------------------------------------------------------------
+
+
+def test_auth_me_returns_synthetic_admin_in_testclient(client: TestClient) -> None:
+    """TestClient short-circuits real socket auth — the middleware
+    substitutes a synthetic admin identity. Verify the route reflects
+    that so other tests can rely on the bypass."""
+    r = client.get("/api/auth/me")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["is_admin"] is True
+    assert body["username"] is not None
+    assert body["source"] == "windows_peer"
+    assert body["required_group_sid"] == "S-1-5-32-544"
+
+
+def test_auth_me_picks_up_settings_change(client: TestClient) -> None:
+    """Required-group SID is configurable. Change it and re-fetch:
+    the new value should appear in /auth/me."""
+    # Save original to restore — we don't want this test to leave the
+    # system in an unexpected state.
+    saved = client.get("/api/settings/auth_required_group_sid").json()["value"]
+    try:
+        client.put(
+            "/api/settings/auth_required_group_sid",
+            json={"value": "S-1-5-32-545"},
+        )
+        r = client.get("/api/auth/me")
+        assert r.status_code == 200
+        assert r.json()["required_group_sid"] == "S-1-5-32-545"
+    finally:
+        client.put(
+            "/api/settings/auth_required_group_sid",
+            json={"value": saved},
+        )
+
+
+def test_middleware_blocks_when_not_admin(monkeypatch) -> None:
+    """Force a non-admin identification result and assert that ALL
+    non-allowlisted routes 403. We monkey-patch the identifier rather
+    than the middleware itself so the production code path runs.
+
+    This also exercises the JSON envelope shape — the frontend
+    branches on ``code`` to choose copy."""
+    from aamp.server import auth_middleware, peer_identity
+
+    # Pretend we're a real loopback client (not testclient) and that
+    # peer-identity resolved to a non-admin. The middleware uses
+    # ``_is_testclient`` to decide whether to bypass; we override.
+    monkeypatch.setattr(auth_middleware, "_is_testclient", lambda request: False)
+    monkeypatch.setattr(
+        peer_identity,
+        "identify_socket_owner",
+        lambda local_port, remote_addr, remote_port, admin_group_sid: peer_identity.SocketIdentity(
+            pid=1234,
+            username="WORKGROUP\\guest",
+            sid="S-1-5-21-FAKE",
+            is_admin=False,
+        ),
+    )
+    # Also override the scope-port resolution since TestClient's
+    # scope server tuple may be missing.
+    monkeypatch.setattr(
+        auth_middleware,
+        "_local_port_from_scope",
+        lambda request: 7331,
+    )
+
+    # New client picks up the patched middleware.
+    from fastapi.testclient import TestClient as TC
+    from aamp.server.app import app as live_app
+    with TC(live_app) as c:
+        r = c.get("/api/settings")
+        assert r.status_code == 403
+        body = r.json()
+        assert body["code"] == "not_admin"
+        assert "guest" in body["detail"]
+        assert body["username"] == "WORKGROUP\\guest"
+
+        # Allowlisted routes still pass even when not admin.
+        r = c.get("/api/auth/me")
+        assert r.status_code == 200
+        r = c.get("/api/config/status")
+        assert r.status_code == 200
