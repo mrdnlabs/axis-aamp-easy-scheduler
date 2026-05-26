@@ -156,6 +156,19 @@ export default function HomePage() {
                         onOpenCapture={(credentialKey) =>
                           setCapture({ credentialKey })
                         }
+                        onStagingAction={(action, stagingId) => {
+                          // Inject a synthetic user message so the LLM
+                          // dispatches the right MCP tool. We include
+                          // the staging_id verbatim so the model has
+                          // no ambiguity about which change-set the
+                          // user clicked on. The same SSE pipeline
+                          // narrates the outcome.
+                          const verb =
+                            action === "apply" ? "Apply" : "Discard";
+                          void send(
+                            `${verb} the staged changes (staging_id: ${stagingId}).`,
+                          );
+                        }}
                       />
                     ))
                   )}

@@ -18,6 +18,13 @@ interface MessagePartViewProps {
    */
   onOpenArtifact?: (artifact: string, key: string) => void;
   onOpenCapture?: (credentialKey: string) => void;
+  /**
+   * Called when the user clicks Apply / Discard on a ScheduleDiffCard
+   * or ApplyConfirmCard. The parent injects a synthetic user turn so
+   * the LLM dispatches ``apply_staged_changes`` / ``discard_staged_changes``
+   * — same code path as if the user had typed it.
+   */
+  onStagingAction?: (action: "apply" | "discard", stagingId: string) => void;
   artifactActive?: { artifact: string; key: string } | null;
 }
 
@@ -32,6 +39,7 @@ export function MessagePartView({
   part,
   onOpenArtifact,
   onOpenCapture,
+  onStagingAction,
   artifactActive,
 }: MessagePartViewProps) {
   switch (part.kind) {
@@ -60,12 +68,19 @@ export function MessagePartView({
           title={part.title}
           effective={part.effective}
           changes={part.changes}
+          onApply={() => onStagingAction?.("apply", part.staging_id)}
+          onDiscard={() => onStagingAction?.("discard", part.staging_id)}
         />
       );
 
     case "apply_confirm":
       return (
-        <ApplyConfirmCard count={part.count} summary={part.summary} />
+        <ApplyConfirmCard
+          count={part.count}
+          summary={part.summary}
+          onApply={() => onStagingAction?.("apply", part.staging_id)}
+          onDiscard={() => onStagingAction?.("discard", part.staging_id)}
+        />
       );
 
     case "secure_capture":

@@ -191,6 +191,29 @@ def test_o1_org_intake_on_fresh_session(chat):
     )
 
 
+def test_staging_apply_synthetic_message_calls_tool(chat):
+    """C4 wiring: when the user clicks Apply on a ScheduleDiffCard, the
+    frontend injects a synthetic user turn shaped like
+    ``"Apply the staged changes (staging_id: stg_xxx)."`` This test
+    sends that shape directly and asserts the model invokes the
+    ``apply_staged_changes`` MCP tool.
+
+    The staging_id is fake (no real staging set behind it) — the tool
+    will return an error, but a TOOL_ERROR result is still proof that
+    the wiring is correct (the model parsed our synthetic message and
+    routed to the right tool). The conftest invariant deliberately
+    only complains about ``TOOL_ERROR: Unknown tool: ...`` errors, not
+    tool errors generally."""
+    result = chat.say(
+        "Apply the staged changes (staging_id: stg_synthetic_test).",
+        check_invariants=False,  # we expect a tool-level error on the fake id
+    )
+    assert result.used_tool("apply_staged_changes"), (
+        f"Expected the synthetic 'Apply…' message to drive an "
+        f"apply_staged_changes call. Got tools: {result.tool_names()}"
+    )
+
+
 def test_d1_describe_site(chat):
     """D1: 'describe this site' → calls describe_site + multi-topic reply."""
     result = chat.say("Tell me about this site — what's already configured?")
