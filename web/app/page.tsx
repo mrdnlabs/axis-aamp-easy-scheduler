@@ -11,9 +11,13 @@ import { OnboardingArtifact } from "@/components/artifacts/onboarding-artifact";
 import { DiscoveryArtifact } from "@/components/artifacts/discovery-artifact";
 import { SecureCaptureModal } from "@/components/artifacts/secure-capture-modal";
 import { GeminiSetupCard } from "@/components/setup/gemini-setup-card";
+import { SettingsPanel } from "@/components/panels/settings-panel";
 import { useChat, artifactStoreKey } from "@/lib/use-chat";
 import { useConfigStatus } from "@/lib/use-config-status";
+import { useSiteOverview } from "@/lib/use-site-overview";
 import type { ArtifactKind } from "@/lib/types";
+
+type PanelKind = "settings" | "credentials" | "audit";
 
 /**
  * ChAAMP home — the live chat workspace.
@@ -45,6 +49,11 @@ export default function HomePage() {
     useConfigStatus();
   const geminiReady = configStatus?.gemini_configured ?? false;
 
+  // Site-overview drives the TopBar siteName once the user has named
+  // the org during intake. Before that, we show "ChAAMP" (handled by
+  // the TopBar fallback when siteName is null).
+  const { overview: siteOverview, refresh: refreshSiteOverview } = useSiteOverview();
+
   // Artifact pane state. ``null`` means the pane is closed.
   const [artifact, setArtifact] = React.useState<{
     artifact: ArtifactKind;
@@ -56,6 +65,9 @@ export default function HomePage() {
     credentialKey: string;
   } | null>(null);
 
+  // Which side panel is open (Settings / Credentials / Audit).
+  const [openPanel, setOpenPanel] = React.useState<PanelKind | null>(null);
+
   // Auto-scroll the chat to the bottom whenever a new part lands.
   const scrollRef = React.useRef<HTMLDivElement>(null);
   React.useEffect(() => {
@@ -64,15 +76,25 @@ export default function HomePage() {
     }
   }, [messages, isStreaming]);
 
+  // When a chat turn ends, the LLM may have patched the intent doc's
+  // Description (during the org-intake conversation). Re-fetch the
+  // site overview so the TopBar siteName picks up the new value
+  // without a manual refresh. Cheap call; only runs on turn-end edges.
+  const wasStreamingRef = React.useRef(false);
+  React.useEffect(() => {
+    if (wasStreamingRef.current && !isStreaming) {
+      void refreshSiteOverview();
+    }
+    wasStreamingRef.current = isStreaming;
+  }, [isStreaming, refreshSiteOverview]);
+
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-surface">
       <TopBar
-        siteName="Lincoln Middle School"
+        siteName={siteOverview?.site_label ?? null}
         serverStatus="reachable"
-        userInitials="MR"
-        userName="Maya Rivera"
-        userRole="Admin · Lincoln MS"
         tokenTotals={tokenTotals}
+        onNavigate={(route) => setOpenPanel(route)}
       />
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
@@ -113,7 +135,6 @@ export default function HomePage() {
                 <MessageRow
                   key={m.id}
                   role={m.role}
-                  userInitials="MR"
                   timestamp={formatTimestamp(m.ts)}
                 >
                   {m.parts.length === 0 && m.role === "assistant" && isStreaming ? (
@@ -169,17 +190,12 @@ export default function HomePage() {
 
           {/* Composer — pinned to the bottom of the chat column.
               Only rendered once Gemini is configured; the setup view
-              above stands in for it otherwise. */}
+              above stands in for it otherwise. Context chips and
+              suggestions are intentionally left as empty arrays —
+              they were demo content. Real ones can come back wired
+              to live state later. */}
           <div className="shrink-0 border-t border-slate-200 bg-surface">
-            <Composer
-              contextChips={["Lincoln MS", "This week", "12 devices · 4 zones"]}
-              suggestions={[
-                "What's on the schedule for next Wednesday?",
-                "Add a fire drill at 2 PM next Tuesday",
-                "Onboard the new speaker at 192.168.1.123",
-              ]}
-              onSend={(text) => void send(text)}
-            />
+            <Composer onSend={(text) => void send(text)} />
           </div>
           </>
           )}
@@ -248,6 +264,16 @@ export default function HomePage() {
           if (info.account_id === "gemini") void refreshConfig();
         }}
       />
+
+      {/* Side panels — at most one open at a time. */}
+      <SettingsPanel
+        open={openPanel === "settings"}
+        onOpenChange={(open) => {
+          if (!open) setOpenPanel(null);
+        }}
+      />
+      {/* Credentials and Audit panels arrive in C3. For now their
+          menu items open nothing — guarded by the conditional above. */}
     </div>
   );
 }

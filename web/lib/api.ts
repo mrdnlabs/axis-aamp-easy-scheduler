@@ -38,6 +38,106 @@ export async function getConfigStatus(): Promise<ConfigStatus> {
 }
 
 // ---------------------------------------------------------------------------
+// Settings — non-secret user-tunable knobs
+// ---------------------------------------------------------------------------
+
+export type SettingType = "int" | "float" | "bool" | "string" | "json";
+
+export interface SettingView {
+  key: string;
+  value: unknown;
+  default: unknown;
+  type: SettingType;
+  category: string;
+  description: string;
+}
+
+export async function getSettings(): Promise<SettingView[]> {
+  const r = await fetch("/api/settings");
+  if (!r.ok) throw await apiError(r);
+  return r.json();
+}
+
+/** PUT one setting. Pass ``null`` to reset to default. */
+export async function putSetting(key: string, value: unknown): Promise<SettingView> {
+  const r = await fetch(`/api/settings/${encodeURIComponent(key)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value }),
+  });
+  if (!r.ok) throw await apiError(r);
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
+// Credentials — list only; values never cross the wire
+// ---------------------------------------------------------------------------
+
+export interface CredentialSlotView {
+  account_id: string;
+  field: string;
+  description: string;
+  env_var: string;
+  is_csv_list: boolean;
+  stored: boolean;
+}
+
+export async function getCredentials(): Promise<CredentialSlotView[]> {
+  const r = await fetch("/api/credentials");
+  if (!r.ok) throw await apiError(r);
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
+// Audit log
+// ---------------------------------------------------------------------------
+
+export interface AuditEntry {
+  ts?: string;
+  op?: string;
+  account_id?: string;
+  field?: string;
+  principal?: string;
+  decision?: string;
+  reason?: string;
+  extra: Record<string, unknown>;
+}
+
+export interface AuditQuery {
+  limit?: number;
+  op?: string;
+  principal?: string;
+}
+
+export async function getAudit(q: AuditQuery = {}): Promise<AuditEntry[]> {
+  const params = new URLSearchParams();
+  if (q.limit !== undefined) params.set("limit", String(q.limit));
+  if (q.op) params.set("op", q.op);
+  if (q.principal) params.set("principal", q.principal);
+  const qs = params.toString();
+  const r = await fetch(`/api/audit${qs ? `?${qs}` : ""}`);
+  if (!r.ok) throw await apiError(r);
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
+// Site overview — used to un-hardcode the TopBar site name
+// ---------------------------------------------------------------------------
+
+export interface SiteOverview {
+  site_id: number;
+  site_label: string | null;
+  headline: string | null;
+  source: "intent_doc" | "placeholder" | "missing";
+}
+
+export async function getSiteOverview(siteId: number = 1): Promise<SiteOverview> {
+  const r = await fetch(`/api/site-overview?site_id=${siteId}`);
+  if (!r.ok) throw await apiError(r);
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
 // Credential capture
 // ---------------------------------------------------------------------------
 

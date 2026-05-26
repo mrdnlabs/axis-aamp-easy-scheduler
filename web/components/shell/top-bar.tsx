@@ -2,12 +2,10 @@
 
 import * as React from "react";
 import {
-  ChevronDown,
   History,
   Plus,
   ClipboardCheck,
   Settings as SettingsIcon,
-  LogOut,
 } from "lucide-react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Logo } from "@/components/brand";
@@ -18,20 +16,22 @@ import { cn } from "@/lib/cn";
 import type { TokenTotals } from "@/lib/use-chat";
 
 interface TopBarProps {
-  /** Friendly site name from the intent doc (e.g. "Lincoln Middle School"). */
-  siteName: string;
+  /** Friendly site name from the intent doc (e.g. "Lincoln Middle School").
+   *  Pass ``null`` when the org-intake hasn't completed yet — the UI
+   *  falls back to a generic "ChAAMP" label. */
+  siteName: string | null;
   /** AAM Pro server reachability. */
   serverStatus: "reachable" | "degraded" | "offline";
-  /** Initials shown in the user avatar (2-3 chars). */
-  userInitials: string;
-  /** Full name + role line in the user dropdown. */
-  userName: string;
-  userRole: string;
   /** Running session token totals; hidden when ``turns === 0``. */
   tokenTotals?: TokenTotals;
   onNewChat?: () => void;
   onOpenHistory?: () => void;
-  onNavigate?: (route: "audit" | "settings") => void;
+  /**
+   * Open one of the side panels. ``credentials`` is mapped to the
+   * "Audit & credentials" menu item visually but is a separate panel
+   * under the hood — see the page-level openPanel state.
+   */
+  onNavigate?: (route: "audit" | "credentials" | "settings") => void;
 }
 
 /**
@@ -51,9 +51,6 @@ interface TopBarProps {
 export function TopBar({
   siteName,
   serverStatus,
-  userInitials,
-  userName,
-  userRole,
   tokenTotals,
   onNewChat,
   onOpenHistory,
@@ -70,7 +67,7 @@ export function TopBar({
 
       <div className="flex-1" />
 
-      <SiteStatusPill siteName={siteName} status={serverStatus} />
+      <SiteStatusPill siteName={siteName ?? "ChAAMP"} status={serverStatus} />
 
       {tokenTotals && <TokenUsagePill totals={tokenTotals} />}
 
@@ -84,12 +81,7 @@ export function TopBar({
         <History size={17} strokeWidth={1.8} />
       </IconButton>
 
-      <UserMenu
-        initials={userInitials}
-        userName={userName}
-        userRole={userRole}
-        onNavigate={onNavigate}
-      />
+      <AppMenu onNavigate={onNavigate} />
     </header>
   );
 }
@@ -125,39 +117,26 @@ function SiteStatusPill({
   );
 }
 
-function UserMenu({
-  initials,
-  userName,
-  userRole,
+/**
+ * App-level dropdown menu. ChAAMP serves the *organization*, not a
+ * specific user — so this menu intentionally has no avatar / name /
+ * role line. It's a tools-and-data hatch, not a profile menu.
+ *
+ * Items split into two groups by purpose:
+ *   - inspect:  Audit log, Credentials manager
+ *   - configure: Settings
+ */
+function AppMenu({
   onNavigate,
 }: {
-  initials: string;
-  userName: string;
-  userRole: string;
-  onNavigate?: (route: "audit" | "settings") => void;
+  onNavigate?: (route: "audit" | "credentials" | "settings") => void;
 }) {
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
-        <button
-          className={cn(
-            "inline-flex items-center gap-1.5 h-8 px-2.5 rounded-2 cursor-pointer",
-            "bg-transparent text-slate-700 text-[13.5px] font-medium",
-            "hover:bg-slate-100 transition-colors",
-            "focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2",
-          )}
-        >
-          <span
-            className={cn(
-              "inline-flex items-center justify-center w-[22px] h-[22px] rounded-[7px]",
-              "bg-audio-gradient text-white font-semibold text-[10px]",
-            )}
-          >
-            {initials}
-          </span>
-          {userName.split(" ")[0]}
-          <ChevronDown size={14} className="text-slate-400" strokeWidth={1.8} />
-        </button>
+        <IconButton aria-label="Menu">
+          <SettingsIcon size={17} strokeWidth={1.8} />
+        </IconButton>
       </DropdownMenu.Trigger>
 
       <DropdownMenu.Portal>
@@ -170,10 +149,16 @@ function UserMenu({
             "z-50",
           )}
         >
-          <div className="px-2.5 py-2 pb-1.5 border-b border-slate-100 mb-1">
-            <div className="text-[12.5px] font-semibold text-ink">{userName}</div>
-            <div className="text-11 text-slate-500">{userRole}</div>
-          </div>
+          <DropdownMenu.Item
+            onSelect={() => onNavigate?.("credentials")}
+            className={cn(
+              "flex items-center gap-2 h-9 px-2.5 rounded-2 text-13 text-slate-700 cursor-pointer",
+              "outline-none focus:bg-slate-100 data-[highlighted]:bg-slate-100",
+            )}
+          >
+            <ClipboardCheck size={15} strokeWidth={1.8} className="text-slate-500" />
+            Credentials
+          </DropdownMenu.Item>
 
           <DropdownMenu.Item
             onSelect={() => onNavigate?.("audit")}
@@ -182,9 +167,11 @@ function UserMenu({
               "outline-none focus:bg-slate-100 data-[highlighted]:bg-slate-100",
             )}
           >
-            <ClipboardCheck size={15} strokeWidth={1.8} className="text-slate-500" />
-            Audit & credentials
+            <History size={15} strokeWidth={1.8} className="text-slate-500" />
+            Audit log
           </DropdownMenu.Item>
+
+          <DropdownMenu.Separator className="h-px bg-slate-100 my-1 -mx-1.5" />
 
           <DropdownMenu.Item
             onSelect={() => onNavigate?.("settings")}
@@ -195,18 +182,6 @@ function UserMenu({
           >
             <SettingsIcon size={15} strokeWidth={1.8} className="text-slate-500" />
             Settings
-          </DropdownMenu.Item>
-
-          <DropdownMenu.Separator className="h-px bg-slate-100 my-1 -mx-1.5" />
-
-          <DropdownMenu.Item
-            className={cn(
-              "flex items-center gap-2 h-9 px-2.5 rounded-2 text-13 text-slate-700 cursor-pointer",
-              "outline-none focus:bg-slate-100 data-[highlighted]:bg-slate-100",
-            )}
-          >
-            <LogOut size={15} strokeWidth={1.8} className="text-slate-500" />
-            Sign out
           </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
