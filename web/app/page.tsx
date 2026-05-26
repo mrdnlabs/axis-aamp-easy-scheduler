@@ -45,7 +45,7 @@ export default function HomePage() {
   // takes over the whole viewport and the chat hook never even runs.
   const { user, isLoading: userLoading } = useCurrentUser();
 
-  const { messages, isStreaming, error, tokenTotals, artifacts, send } = useChat(
+  const { messages, isStreaming, error, tokenTotals, artifacts, send, reset } = useChat(
     "Hi — I'm ChAAMP. Tell me what you'd like to change about your schedule, " +
       "or ask me about your devices. I'll show you the diff before I apply " +
       "anything.",
@@ -116,6 +116,7 @@ export default function HomePage() {
         serverStatus="reachable"
         tokenTotals={tokenTotals}
         username={user.username}
+        onNewChat={() => reset()}
         onNavigate={(route) => setOpenPanel(route)}
       />
 
@@ -144,7 +145,6 @@ export default function HomePage() {
                 <div className="w-full max-w-[640px]">
                   <GeminiSetupCard
                     onSetUp={() => setCapture({ credentialKey: "gemini/api_key" })}
-                    size="hero"
                   />
                 </div>
               </div>
@@ -225,10 +225,7 @@ export default function HomePage() {
 
           {/* Composer — pinned to the bottom of the chat column.
               Only rendered once Gemini is configured; the setup view
-              above stands in for it otherwise. Context chips and
-              suggestions are intentionally left as empty arrays —
-              they were demo content. Real ones can come back wired
-              to live state later. */}
+              above stands in for it otherwise. */}
           <div className="shrink-0 border-t border-slate-200 bg-surface">
             <Composer onSend={(text, files) => void send(text, files)} />
           </div>

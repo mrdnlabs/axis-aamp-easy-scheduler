@@ -30,8 +30,8 @@ interface TopBarProps {
    * glance which Windows account is acting.
    */
   username?: string | null;
+  /** Clear the message log + reset the session token totals. */
   onNewChat?: () => void;
-  onOpenHistory?: () => void;
   /**
    * Open one of the side panels. ``credentials`` is mapped to the
    * "Audit & credentials" menu item visually but is a separate panel
@@ -49,10 +49,11 @@ interface TopBarProps {
  *   - Logo (brand glyph + ChAAMP wordmark)
  *   - flex spacer
  *   - Site / AAM-Pro status pill
+ *   - Token usage pill (when there are tokens to show)
  *   - thin vertical divider
- *   - New chat button (plus icon)
- *   - History icon button
- *   - User menu (avatar + name + chevron, opens dropdown with Audit/Settings)
+ *   - New chat button (plus icon — clears the session)
+ *   - App menu (settings gear, opens Credentials / Audit log / Settings)
+ *   - User chip (Windows identity, only when known)
  */
 export function TopBar({
   siteName,
@@ -60,7 +61,6 @@ export function TopBar({
   tokenTotals,
   username,
   onNewChat,
-  onOpenHistory,
   onNavigate,
 }: TopBarProps) {
   return (
@@ -80,12 +80,8 @@ export function TopBar({
 
       <div className="w-px h-[22px] bg-slate-200" />
 
-      <IconButton aria-label="New chat" onClick={onNewChat}>
+      <IconButton aria-label="New chat" onClick={onNewChat} title="Start a new chat (clear the current session)">
         <Plus size={17} strokeWidth={1.8} />
-      </IconButton>
-
-      <IconButton aria-label="History" onClick={onOpenHistory}>
-        <History size={17} strokeWidth={1.8} />
       </IconButton>
 
       <AppMenu onNavigate={onNavigate} />

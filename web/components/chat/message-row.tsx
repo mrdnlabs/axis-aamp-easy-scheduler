@@ -3,7 +3,6 @@ import { cn } from "@/lib/cn";
 
 interface MessageRowProps {
   role: "user" | "assistant";
-  userInitials?: string;
   timestamp: string;
   children: React.ReactNode;
 }
@@ -13,16 +12,17 @@ interface MessageRowProps {
  *
  * Two-column grid: 36px avatar gutter + 1fr content.
  *
- *   - User avatar: slate-200 bg + 28×28 square + initials (slate-700)
  *   - Assistant avatar: audio-gradient bg with the BrandMark glyph,
- *     a soft accent-tinted shadow underneath
- *   - Author label + assistant pill ("ASSISTANT" in accent-soft)
- *   - Timestamp in mono 11.5px slate-400
- *   - Body content is whatever the caller passes (text, widgets, pills)
+ *     a soft accent-tinted shadow underneath.
+ *   - User avatar: a small neutral chip — ChAAMP serves the
+ *     organization and authentication is handled via Windows peer
+ *     identity in the TopBar, so we don't repeat identity here.
+ *   - Author label + assistant pill ("ASSISTANT" in accent-soft).
+ *   - Timestamp in mono 11.5px slate-400.
+ *   - Body content is whatever the caller passes (text, widgets, pills).
  */
 export function MessageRow({
   role,
-  userInitials = "—",
   timestamp,
   children,
 }: MessageRowProps) {
@@ -33,15 +33,16 @@ export function MessageRow({
         {role === "assistant" ? (
           <BrandMark size={28} />
         ) : (
+          // Neutral filler — the "You" label below identifies the row;
+          // a name/initials would imply identity we deliberately don't
+          // track per-message.
           <span
             className={cn(
-              "inline-flex items-center justify-center w-7 h-7 rounded-[8px]",
-              "bg-slate-200 text-slate-700 font-semibold text-[10.5px]",
+              "inline-block w-7 h-7 rounded-[8px]",
+              "bg-slate-100 border border-slate-200",
             )}
             aria-hidden="true"
-          >
-            {userInitials}
-          </span>
+          />
         )}
       </div>
 
