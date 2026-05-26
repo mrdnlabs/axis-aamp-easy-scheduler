@@ -9,6 +9,29 @@ Each persona is paired with a set of user stories in
 > corporate paging, and house-of-worship AV install conversations. They are
 > not real people. The site fixture used in tests is "Lincoln Middle School".
 
+## Important framing: ChAAMP serves the organization, not the user
+
+Each persona below describes a *type* of human who might be at the
+keyboard, but ChAAMP's data model and conversation flow are anchored
+on the **organization** — the school, office, retail store, or
+facility. The human in front of the chat may change session to
+session; the organization persists.
+
+This shapes two concrete behaviors:
+
+- **Intake asks about the organization, never about the user.** We do
+  not collect names, roles, or job titles. We do collect: org name,
+  org type, audio use cases, operating hours, building/area layout.
+- **Persistence lives in the intent doc.** The `Description` and
+  `Audio use profile` sections of the per-site intent doc are the
+  durable record. Anything we'd want to remember across sessions
+  goes there; nothing about the user does.
+
+The personas exist to remind us *which kinds of org-shaped questions
+matter to which kinds of operator* (Maya cares about safety drills;
+David cares about onboarding speed). They are not a reason to start
+storing user-level data.
+
 ---
 
 ## Maya Rivera — K-12 administrator (primary)

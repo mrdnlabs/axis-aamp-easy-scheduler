@@ -151,6 +151,46 @@ def test_s1_capability_discovery(chat):
 # ---------------------------------------------------------------------------
 
 
+def test_o1_org_intake_on_fresh_session(chat):
+    """O1: with placeholder Description AND Audio use profile in the
+    intent doc, a fresh session should elicit at least one org-level
+    intake question (org type OR audio use cases). The model is NOT
+    expected to ask about the human in front of it (no name/role) —
+    intake is about the organization."""
+    # An open prompt that invites the model to lead the intake.
+    result = chat.say("Hi, I'd like to set up audio scheduling here.")
+    text = result.all_text
+
+    # Org-level intake keywords.
+    org_intake = [
+        "kind of", "what kind", "school", "office", "retail",
+        "healthcare", "worship", "type of", "what's the name",
+        "name of your organization", "name of your site",
+        "audio for", "use the audio", "use cases", "what do you",
+        "use it for", "primarily", "mainly", "what does", "what's its",
+        "what kind of place",
+    ]
+    org_hits = sum(1 for k in org_intake if k in text)
+    assert org_hits >= 1, (
+        f"Expected at least one org-level intake question. "
+        f"Got: {text[:500]!r}"
+    )
+
+    # User-level intake we want to AVOID. The intake is about the org,
+    # not the human. (Allow "you" as the org's operator, but reject
+    # explicit name/role asks.)
+    user_asks = [
+        "what's your name", "what is your name", "your full name",
+        "what's your role", "what is your role", "what's your title",
+        "your job title", "who am i speaking",
+    ]
+    user_hits = [k for k in user_asks if k in text]
+    assert not user_hits, (
+        f"Model asked for user identity instead of org details: "
+        f"{user_hits}. Got: {text[:500]!r}"
+    )
+
+
 def test_d1_describe_site(chat):
     """D1: 'describe this site' → calls describe_site + multi-topic reply."""
     result = chat.say("Tell me about this site — what's already configured?")

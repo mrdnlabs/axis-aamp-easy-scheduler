@@ -149,6 +149,23 @@ Requires hardware; tested via `scripts/test_device_*` in the dev loop.
 
 ---
 
+## Organization intake (cross-cutting)
+
+### O1 [TESTED] Org-level intake — not user-level
+> *"Hi, I'd like to set up audio scheduling here."*
+
+On a fresh session (intent doc placeholders for Description AND Audio
+use profile), the assistant should ask about the **organization**:
+what kind of place it is, what it uses audio for, when it operates.
+It MUST NOT ask the human in front of it for name or role — the human
+is interchangeable; the org is the thing being configured.
+
+**Assertions.**
+- Response contains at least one org-level intake keyword (`kind of`,
+  `name of your organization`, `use the audio for`, etc.).
+- Response contains NO user-identity keyword (`what's your name`,
+  `what's your role`, `your job title`, etc.).
+
 ## Cross-cutting (not tied to a single persona)
 
 ### X1 [TESTED] No hallucinated tool calls

@@ -129,15 +129,35 @@ _Last updated: {timestamp}_
 
 ## Description
 
-**[ Site name unknown — ask the user. ]**
+**[ Site name unknown — ask. ]**
 
-_(Describe the site in the user's own words: the actual name of the school, business, or organization; the kind of place it is; which buildings/areas/floors are involved; roughly how many people use it; any scheduling quirks. Two examples just to show the shape — do **not** substitute these for real info:_
+_(Describe the organization itself: the actual name; the kind of place it is (school / office / retail / healthcare / house of worship / other); which buildings/areas/floors are involved; roughly how many people are typically on site; any scheduling quirks. Two examples just to show the shape — do **not** substitute these for real info:_
 
 _Example 1 (school):  "Lincoln Middle School, about 600 students. Three buildings: main, gym, cafeteria. Block schedules Tue/Thu; traditional six-period Mon/Wed/Fri. District holidays cancel all bells."_
 
-_Example 2 (office):  "Northpoint Corporate HQ, 4 floors plus a lobby and 2 conference centers. Background music in common areas during business hours; chimes at 12:00 for lunch."_
+_Example 2 (office):  "Northpoint Corporate HQ, 4 floors plus a lobby and 2 conference centers. Roughly 220 staff. Open Mon-Fri 7am-7pm."_
 
-_Replace this whole block — including the bracketed note — once you've confirmed the real site name and basic structure with the user.)_
+_Replace this whole block — including the bracketed note — once you've confirmed the real site name and basic structure.)_
+
+## Audio use profile
+
+**[ Audio use cases unknown — ask. ]**
+
+_(What this organization uses audio for, in priority order. Examples by organization type — do **not** substitute these for real info:_
+
+_- School: (1) bell schedule, (2) all-call announcements (PA), (3) safety drills (fire / lockdown), (4) optional background music at dismissal._
+
+_- Office: (1) lunch / coffee chimes, (2) emergency / all-hands paging, (3) background music in common areas during business hours._
+
+_- Retail: (1) in-store background music, (2) periodic announcements (specials, closing), (3) opening / closing chimes._
+
+_- Healthcare: (1) code / overhead pages, (2) scheduled chimes (med rounds, visiting hours), (3) ambient music in lobby._
+
+_- House of worship: (1) service-time chimes, (2) prerecorded announcements, (3) background music for fellowship hours._
+
+_Operating window — when does the system need to be active? (e.g., school year Sep–Jun; office Mon-Fri 7-7; retail seven days 9am-9pm.)_
+
+_Replace this whole block once you understand what the org actually uses audio for. If bells aren't a primary use case for this org, the Day schedules / Application sections below may not apply — leave them as "_n/a — not a bell-driven org_" rather than fabricating bell content.)_
 
 ## School year
 
