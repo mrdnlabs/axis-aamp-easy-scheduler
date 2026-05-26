@@ -43,6 +43,28 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 # tool-heavy ChAAMP workload.
 DEFAULT_MODEL = os.environ.get("CHAAMP_GEMINI_MODEL", "gemini-2.5-flash")
 MAX_TOOL_ROUNDS = 12   # safety stop for runaway tool-call loops
+TRANSIENT_RETRIES = 2  # extra attempts on 503/429/500 (3 total tries)
+TRANSIENT_BACKOFF_S = 1.0  # first sleep; doubles each retry
+
+
+# Tokens that mark a Gemini SDK exception as "transient backend noise"
+# rather than a real client-side problem. Conservative — better to
+# surface odd errors than silently retry them.
+_TRANSIENT_MARKERS = (
+    "503", "UNAVAILABLE", "high demand",
+    "429", "RESOURCE_EXHAUSTED", "rate limit",
+    "500", "INTERNAL",
+    "DEADLINE_EXCEEDED",
+)
+
+
+def _is_transient_error(e: Exception) -> bool:
+    """True iff this exception is the kind we want to retry. Matches on
+    the error's string form so we don't depend on a specific Gemini SDK
+    exception class hierarchy (the SDK has reshuffled these multiple
+    times)."""
+    s = str(e)
+    return any(m in s for m in _TRANSIENT_MARKERS)
 
 # Transcript log directory. One JSONL per session. Created on demand.
 TRANSCRIPT_DIR = Path(__file__).resolve().parent.parent.parent.parent / "logs"
@@ -549,28 +571,80 @@ async def _run_turn(req: ChatRequest):
     # file gets flushed.
     # Gemini sometimes returns ``STOP`` with an empty content envelope on
     # very short user messages (e.g., "hi") against a large tool list —
-    # this is a known Gemini quirk, not a safety block. Observed
-    # empirically as ~50–67% empty rate on bare greetings against our
-    # ~14.5K-token prefix. We retry once with a brief inline nudge in
-    # the contents (temperature bump alone doesn't help — the model has
-    # decided there's nothing to say; we have to give it something to
-    # anchor on). The nudge is invisible to the user.
-    retry_nudge = (
+    # known Gemini quirk, not a safety block. Observed empirically as
+    # ~30–60 % empty rate on bare greetings against our ~14.5K-token
+    # prefix, even AFTER one retry. We escalate across multiple retries
+    # with increasingly direct nudges; if all attempts fail, we surface
+    # a hardcoded friendly greeting (the user never sees a broken state).
+    # Cost ceiling: ~5x the base prefix tokens worst-case, free on the
+    # happy path. Cached prefixes keep the marginal cost low (~25 % of
+    # full price per retry after the first call warms the cache).
+    RETRY_NUDGES = (
+        # First retry: subtle reminder.
         "[system: respond to the user's message above. If they sent a brief "
-        "greeting, say hi and offer to help with their schedule.]"
+        "greeting, say hi and offer to help with their schedule.]",
+        # Second retry: more directive.
+        "[system: the previous response attempt was empty. The user is "
+        "waiting. Reply now with at least a one-sentence greeting plus a "
+        "brief offer to help with scheduling, audio, or devices.]",
     )
+    # Last-resort fallback if all retries also empty. Used only when the
+    # user input looks like a bare greeting; for other inputs we surface
+    # the diagnostic so we can investigate.
+    HARDCODED_GREETING_FALLBACK = (
+        "Hi! I'm ChAAMP. I can help you set up bell schedules, add or move "
+        "audio announcements, onboard new Axis speakers, and answer questions "
+        "about your site. What would you like to work on?"
+    )
+    GREETING_PATTERNS = (
+        "hi", "hello", "hey", "yo", "hiya", "howdy", "greetings", "sup",
+    )
+
+    def _looks_like_greeting(text: str) -> bool:
+        """True iff the user's text is short and matches a common
+        greeting opener. Anchored to the start so 'hi there' counts but
+        'history of changes' doesn't."""
+        if not text:
+            return False
+        normalized = text.strip().lower().rstrip("!?.,")
+        if len(normalized) > 30:
+            return False
+        return any(
+            normalized == p or normalized.startswith(p + " ") or normalized.startswith(p + ",")
+            for p in GREETING_PATTERNS
+        )
 
     try:
         for round_idx in range(MAX_TOOL_ROUNDS):
-            try:
-                # The SDK's async path is ``client.aio.models.generate_content``.
-                response = await client.aio.models.generate_content(
-                    model=DEFAULT_MODEL,
-                    contents=contents,
-                    config=config,
-                )
-            except Exception as e:
-                msg = f"{type(e).__name__}: {e}"
+            # Up to TRANSIENT_RETRIES extra attempts on 503 / 429 / 500.
+            # These show up under sustained Gemini load (we've seen 503s
+            # roughly daily). Surfacing them as a hard error would fail
+            # the user's chat turn for what's purely backend noise.
+            response = None
+            last_exc: Optional[Exception] = None
+            for transient_attempt in range(TRANSIENT_RETRIES + 1):
+                try:
+                    # SDK async path is ``client.aio.models.generate_content``.
+                    response = await client.aio.models.generate_content(
+                        model=DEFAULT_MODEL,
+                        contents=contents,
+                        config=config,
+                    )
+                    last_exc = None
+                    break
+                except Exception as e:
+                    last_exc = e
+                    if not _is_transient_error(e) or transient_attempt >= TRANSIENT_RETRIES:
+                        break
+                    backoff = TRANSIENT_BACKOFF_S * (2 ** transient_attempt)
+                    log.write("transient_retry",
+                              stage=f"generate_content (round {round_idx + 1})",
+                              attempt=transient_attempt + 1,
+                              backoff_s=backoff,
+                              detail=f"{type(e).__name__}: {e}")
+                    await asyncio.sleep(backoff)
+            if response is None:
+                msg = f"{type(last_exc).__name__}: {last_exc}"
                 log.write("error", stage=f"generate_content (round {round_idx + 1})", detail=msg)
                 yield _sse("error", {
                     "detail": msg,
@@ -588,29 +662,30 @@ async def _run_turn(req: ChatRequest):
                     "request_totals": usage.request_totals(),
                 })
 
-            # If the first response is empty-STOP (the Gemini quirk),
-            # silently retry once with a small temperature bump. Only on
-            # round 0 — empties on later rounds usually indicate something
-            # genuinely wrong (e.g., malformed tool result) and silent
-            # retry would mask it.
-            if (
-                round_idx == 0
-                and response.candidates
-                and response.candidates[0].content
-                and not response.candidates[0].content.parts
-                and response.candidates[0].finish_reason
-                and response.candidates[0].finish_reason.name == "STOP"
-            ):
+            # Empty-STOP retry loop. Only on round 0 — empties mid-tool-
+            # loop usually indicate something genuinely wrong (e.g.,
+            # malformed tool result) and silent retry would mask it.
+            for nudge_idx, nudge in enumerate(RETRY_NUDGES):
+                if not (
+                    round_idx == 0
+                    and response.candidates
+                    and response.candidates[0].content
+                    and not response.candidates[0].content.parts
+                    and response.candidates[0].finish_reason
+                    and response.candidates[0].finish_reason.name == "STOP"
+                ):
+                    break  # got real content; no more retries needed
+
                 log.write("empty_response_retry",
+                          attempt=nudge_idx + 1,
                           reason="STOP with empty parts on round 0",
                           strategy="append nudge to contents")
                 # Build the retry contents: original list + a synthetic
-                # 'user' turn carrying the nudge. We use ``user`` role
-                # because Gemini doesn't expose a separate system-mid-
-                # conversation role — but the bracketed [system: ...]
-                # framing reads as instruction to the model.
+                # 'user' turn carrying the nudge. Gemini doesn't expose
+                # a separate system-mid-conversation role; the bracketed
+                # [system: ...] framing reads as instruction to the model.
                 retry_contents = list(contents) + [
-                    types.Content(role="user", parts=[types.Part(text=retry_nudge)])
+                    types.Content(role="user", parts=[types.Part(text=nudge)])
                 ]
                 try:
                     response = await client.aio.models.generate_content(
@@ -619,20 +694,19 @@ async def _run_turn(req: ChatRequest):
                         config=config,
                     )
                 except Exception as e:
-                    # Fall through; the empty-branch below will surface
-                    # what we have (a stale empty response).
                     log.write("empty_response_retry_failed",
+                              attempt=nudge_idx + 1,
                               detail=f"{type(e).__name__}: {e}")
-                else:
-                    per_turn_retry = usage.add(getattr(response, "usage_metadata", None))
-                    if per_turn_retry:
-                        log.write("token_usage", per_turn=per_turn_retry,
-                                  totals=usage.request_totals(),
-                                  note="retry")
-                        yield _sse("usage", {
-                            "per_turn": per_turn_retry,
-                            "request_totals": usage.request_totals(),
-                        })
+                    break  # stop retrying on hard error
+                per_turn_retry = usage.add(getattr(response, "usage_metadata", None))
+                if per_turn_retry:
+                    log.write("token_usage", per_turn=per_turn_retry,
+                              totals=usage.request_totals(),
+                              note=f"retry#{nudge_idx + 1}")
+                    yield _sse("usage", {
+                        "per_turn": per_turn_retry,
+                        "request_totals": usage.request_totals(),
+                    })
 
             candidate = response.candidates[0] if response.candidates else None
             finish_reason = (
@@ -641,14 +715,39 @@ async def _run_turn(req: ChatRequest):
                 else None
             )
             if not candidate or not candidate.content or not candidate.content.parts:
-                # Nothing came back. Capture enough diagnostic detail in the
-                # transcript that the next time this happens we can tell
-                # exactly which branch fired: prompt-side safety block,
-                # response-side safety block, or just a Gemini empty
-                # response on a huge prefix + tiny user message.
+                # Nothing came back even after retries. Capture diagnostic
+                # detail so the next time this happens we can tell which
+                # branch fired (prompt-side safety, response-side safety,
+                # or the "no opinion" empty-STOP quirk).
                 empty_info = _gather_empty_response_info(response, candidate)
                 empty_info["round"] = round_idx + 1
                 log.write("assistant_empty", **empty_info)
+
+                # Last-resort fallback: if the user sent a bare greeting
+                # we emit a hardcoded friendly response so they don't see
+                # a broken-looking diagnostic message. For non-greeting
+                # inputs we surface the diagnostic so we can investigate
+                # — those are rare and worth a manual look.
+                pf_block = (empty_info.get("prompt_feedback") or {}).get("block_reason")
+                cand_block = (empty_info.get("candidate") or {}).get("finish_reason") == "SAFETY"
+                if (
+                    round_idx == 0
+                    and not pf_block
+                    and not cand_block
+                    and _looks_like_greeting(req.text)
+                ):
+                    log.write("hardcoded_greeting_fallback")
+                    yield _sse("part", {
+                        "kind": "text",
+                        "body": HARDCODED_GREETING_FALLBACK,
+                    })
+                    yield _sse("done", {
+                        "finish_reason": "STOP_FALLBACK",
+                        "empty_info": empty_info,
+                        "fallback": "hardcoded_greeting",
+                    })
+                    return
+
                 user_msg = _format_empty_response_message(empty_info)
                 yield _sse("part", {"kind": "text", "body": user_msg})
                 yield _sse("done", {
