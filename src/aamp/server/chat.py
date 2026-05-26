@@ -80,10 +80,32 @@ class HistoryMessage(BaseModel):
     text: str
 
 
+class FileAttachment(BaseModel):
+    """One file attached to a chat turn. Encoded as base64 in JSON so
+    we don't need a separate multipart endpoint — for our scale (18 MB
+    cap, typical attachments well under 1 MB) the ~33% inflation is
+    cheap compared to the simplicity of staying on one route shape.
+
+    The server re-encodes to ``types.Part.from_bytes`` before handing
+    to Gemini — mirroring the CLI's attachment path."""
+    name: str = Field(..., min_length=1, max_length=200)
+    mime_type: str = Field(..., min_length=1, max_length=120)
+    data_b64: str = Field(..., min_length=1)
+
+
 class ChatRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=16000)
     history: list[HistoryMessage] = Field(default_factory=list)
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    #: Files attached to THIS turn (not the history). Each one becomes
+    #: an extra ``types.Part`` appended to the user content alongside
+    #: ``text``. Max total decoded size enforced in _run_turn.
+    attachments: list[FileAttachment] = Field(default_factory=list)
+
+
+# Maximum total decoded attachment bytes per turn. Matches the CLI's
+# 18 MB Gemini inline-data cap, with a tiny buffer.
+MAX_ATTACHMENT_BYTES_PER_TURN = 18 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -545,7 +567,45 @@ async def _run_turn(req: ChatRequest):
         contents.append(
             types.Content(role=role, parts=[types.Part(text=scrubber.scrub(msg.text))])
         )
-    contents.append(types.Content(role="user", parts=[types.Part(text=req.text)]))
+
+    # Build the user turn: text first, then any attachments. Each
+    # attachment is decoded once here; if the total exceeds the cap
+    # we bail with an error rather than handing oversized content to
+    # Gemini (which would just refuse anyway, but slower).
+    user_parts: list[Any] = [types.Part(text=req.text)]
+    total_attachment_bytes = 0
+    if req.attachments:
+        import base64
+        import binascii
+        for att in req.attachments:
+            try:
+                data = base64.b64decode(att.data_b64, validate=True)
+            except (binascii.Error, ValueError) as e:
+                yield _sse("error", {
+                    "detail": f"Attachment {att.name!r}: invalid base64 ({e})",
+                    "stage": "attachment_decode",
+                })
+                return
+            total_attachment_bytes += len(data)
+            if total_attachment_bytes > MAX_ATTACHMENT_BYTES_PER_TURN:
+                yield _sse("error", {
+                    "detail": (
+                        f"Attachments exceed the {MAX_ATTACHMENT_BYTES_PER_TURN // (1024*1024)}MB "
+                        f"per-turn cap (Gemini inline-data limit). Split into "
+                        f"multiple turns or shrink the files."
+                    ),
+                    "stage": "attachment_size",
+                })
+                return
+            user_parts.append(types.Part.from_bytes(
+                data=data,
+                mime_type=att.mime_type,
+            ))
+        log.write("attachments_received",
+                  count=len(req.attachments),
+                  total_bytes=total_attachment_bytes,
+                  names=[a.name for a in req.attachments])
+    contents.append(types.Content(role="user", parts=user_parts))
 
     # Load Gemini-shaped tool declarations from the in-process MCP server.
     try:

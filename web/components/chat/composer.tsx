@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Paperclip, Command as CommandIcon, ArrowUp } from "lucide-react";
+import { Paperclip, Command as CommandIcon, ArrowUp, X } from "lucide-react";
 import { Button, IconButton } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 
@@ -10,8 +10,8 @@ interface ComposerProps {
   contextChips?: string[];
   /** Suggested prompts that appear when the textarea is empty. */
   suggestions?: string[];
-  /** Send callback. */
-  onSend?: (text: string) => void;
+  /** Send callback. Receives the text and any queued attachments. */
+  onSend?: (text: string, files?: File[]) => void;
   /**
    * When true, the composer is non-interactive — textarea, buttons,
    * and suggestion chips are all disabled. Use ``disabledReason`` to
@@ -22,6 +22,20 @@ interface ComposerProps {
   /** One-line explanation shown in the footer when ``disabled`` is set. */
   disabledReason?: string;
 }
+
+// Accepted MIME types for chat attachments — matches what Gemini's
+// inline-data path supports and what aamp.chat's CLI uploader accepts.
+// Browsers translate this into the file picker's filter.
+const ACCEPTED_FILE_TYPES = [
+  ".pdf",
+  ".csv",
+  ".txt",
+  ".md",
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+].join(",");
 
 /**
  * The chat composer — sticky to the bottom of the chat column.
@@ -46,14 +60,17 @@ export function Composer({
   disabledReason,
 }: ComposerProps) {
   const [value, setValue] = React.useState("");
+  const [files, setFiles] = React.useState<File[]>([]);
   const taRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   function handleSend() {
     if (disabled) return;
     const text = value.trim();
     if (!text) return;
-    onSend?.(text);
+    onSend?.(text, files.length > 0 ? files : undefined);
     setValue("");
+    setFiles([]);
   }
 
   function handleKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -62,6 +79,23 @@ export function Composer({
       e.preventDefault();
       handleSend();
     }
+  }
+
+  function handleAttachClick() {
+    if (disabled) return;
+    fileInputRef.current?.click();
+  }
+
+  function handleFilesPicked(e: React.ChangeEvent<HTMLInputElement>) {
+    const picked = Array.from(e.target.files ?? []);
+    if (picked.length === 0) return;
+    setFiles((prev) => [...prev, ...picked]);
+    // Reset the input so the same file can be picked again later.
+    e.target.value = "";
+  }
+
+  function removeFile(index: number) {
+    setFiles((prev) => prev.filter((_, i) => i !== index));
   }
 
   return (
@@ -85,6 +119,40 @@ export function Composer({
             >
               {s}
             </button>
+          ))}
+        </div>
+      )}
+
+      {/* Attached-files chip strip — only when there are queued files. */}
+      {files.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {files.map((f, i) => (
+            <span
+              key={`${f.name}_${i}`}
+              className={cn(
+                "inline-flex items-center gap-1.5 h-7 pl-2.5 pr-1.5 rounded-full",
+                "bg-accent-soft text-accent-700 border border-accent/20",
+                "text-12 max-w-[260px]",
+              )}
+              title={`${f.name} (${formatFileSize(f.size)})`}
+            >
+              <Paperclip size={11} strokeWidth={2} className="shrink-0" />
+              <span className="truncate">{f.name}</span>
+              <span className="text-accent/70 mono text-[10.5px] shrink-0">
+                {formatFileSize(f.size)}
+              </span>
+              <button
+                type="button"
+                onClick={() => removeFile(i)}
+                className={cn(
+                  "inline-flex items-center justify-center w-4 h-4 rounded-full",
+                  "hover:bg-accent/10 shrink-0",
+                )}
+                aria-label={`Remove ${f.name}`}
+              >
+                <X size={11} strokeWidth={2.2} />
+              </button>
+            </span>
           ))}
         </div>
       )}
@@ -159,9 +227,22 @@ export function Composer({
             "border-t border-slate-100",
           )}
         >
-          <IconButton aria-label="Attach file" size={30} disabled={disabled}>
+          <IconButton
+            aria-label="Attach file"
+            size={30}
+            disabled={disabled}
+            onClick={handleAttachClick}
+          >
             <Paperclip size={15} strokeWidth={1.8} />
           </IconButton>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept={ACCEPTED_FILE_TYPES}
+            className="hidden"
+            onChange={handleFilesPicked}
+          />
           <IconButton aria-label="Quick command" size={30} disabled={disabled}>
             <CommandIcon size={15} strokeWidth={1.8} />
           </IconButton>
@@ -184,4 +265,10 @@ export function Composer({
       </div>
     </div>
   );
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

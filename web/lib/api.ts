@@ -222,10 +222,39 @@ export interface HistoryMessage {
   text: string;
 }
 
+export interface FileAttachment {
+  name: string;
+  mime_type: string;
+  data_b64: string;
+}
+
 export interface ChatRequest {
   text: string;
   history?: HistoryMessage[];
   session_id?: string;
+  attachments?: FileAttachment[];
+}
+
+/**
+ * Read a browser ``File`` into the base64-JSON shape the chat endpoint
+ * expects. The result is suitable for inclusion in
+ * ``ChatRequest.attachments``. Throws on read errors.
+ */
+export async function fileToAttachment(file: File): Promise<FileAttachment> {
+  const buf = await file.arrayBuffer();
+  // Manual base64 — btoa(String.fromCharCode(...)) is fine for files
+  // under a few MB; for larger we chunk to avoid call-stack issues.
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return {
+    name: file.name,
+    mime_type: file.type || "application/octet-stream",
+    data_b64: btoa(binary),
+  };
 }
 
 export interface SseEvent<T = unknown> {
@@ -265,6 +294,7 @@ export async function* streamChatMessage(
       text: req.text,
       history: req.history ?? [],
       session_id: req.session_id,
+      attachments: req.attachments ?? [],
     }),
   });
   if (!r.ok || !r.body) throw await apiError(r);

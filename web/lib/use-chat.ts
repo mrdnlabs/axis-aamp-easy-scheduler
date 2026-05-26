@@ -1,7 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { streamChatMessage, ApiError, type HistoryMessage } from "@/lib/api";
+import {
+  streamChatMessage,
+  ApiError,
+  fileToAttachment,
+  type FileAttachment,
+  type HistoryMessage,
+} from "@/lib/api";
 import type {
   Artifact,
   ArtifactPillPart,
@@ -50,7 +56,12 @@ export interface UseChatResult {
    * in place so an open pane reflects the new state automatically.
    */
   artifacts: Record<string, Artifact>;
-  send: (text: string) => Promise<void>;
+  /**
+   * Send a message with optional file attachments. Browser ``File``
+   * objects are base64-encoded and sent inline as part of the JSON
+   * body — see ``fileToAttachment`` for the encoding.
+   */
+  send: (text: string, files?: File[]) => Promise<void>;
   reset: () => void;
 }
 
@@ -111,20 +122,40 @@ export function useChat(initialAssistantText?: string): UseChatResult {
   }, [initialAssistantText]);
 
   const send = React.useCallback(
-    async (text: string) => {
+    async (text: string, files?: File[]) => {
       const trimmed = text.trim();
       if (!trimmed || isStreaming) return;
 
       setError(null);
 
+      // Encode any attachments to the base64 wire shape BEFORE we
+      // optimistically append the user message — if encoding fails
+      // we want to surface that as an error and bail without leaving
+      // a half-state message in the log.
+      let attachments: FileAttachment[] | undefined;
+      if (files && files.length > 0) {
+        try {
+          attachments = await Promise.all(files.map(fileToAttachment));
+        } catch (e) {
+          setError({ detail: `Couldn't read attachment: ${String(e)}` });
+          return;
+        }
+      }
+
       // Snapshot the current message list, then append the user message
       // and a fresh empty assistant message that parts will stream into.
       const now = new Date().toISOString();
+      // Build the visible user message text. We surface attachment
+      // names so the user can see what they sent — the body Gemini
+      // gets contains the actual bytes, not just the names.
+      const visibleBody = attachments && attachments.length > 0
+        ? `${trimmed}\n\n_Attached: ${attachments.map((a) => a.name).join(", ")}_`
+        : trimmed;
       const userMsg: ChatMessage = {
         id: `m_${Date.now()}_u`,
         role: "user",
         ts: now,
-        parts: [{ kind: "text", body: trimmed }],
+        parts: [{ kind: "text", body: visibleBody }],
       };
       const asstMsg: ChatMessage = {
         id: `m_${Date.now()}_a`,
@@ -141,6 +172,7 @@ export function useChat(initialAssistantText?: string): UseChatResult {
           text: trimmed,
           history,
           session_id: SESSION_ID,
+          attachments,
         })) {
           if (ev.event === "part") {
             const part = ev.data as MessagePart;

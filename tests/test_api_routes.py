@@ -172,6 +172,31 @@ def test_site_overview_shape(client: TestClient) -> None:
         assert body["site_label"] is None
 
 
+def test_chat_request_accepts_attachments_shape() -> None:
+    """Construct a ChatRequest with an attachment and verify it validates.
+
+    We're not actually sending it through the LLM (that's a separate
+    suite); we just want to confirm the wire shape compiles. This
+    catches accidental regression of the FileAttachment schema."""
+    from aamp.server.chat import ChatRequest, FileAttachment
+
+    req = ChatRequest(
+        text="here's a file",
+        attachments=[
+            FileAttachment(
+                name="hello.txt",
+                mime_type="text/plain",
+                # b"hello world" base64-encoded
+                data_b64="aGVsbG8gd29ybGQ=",
+            ),
+        ],
+    )
+    assert req.attachments[0].name == "hello.txt"
+    assert req.attachments[0].mime_type == "text/plain"
+    # Pydantic min_length=1 should reject empty data, but valid b64 is fine.
+    assert len(req.attachments[0].data_b64) >= 1
+
+
 def test_site_overview_explicit_site_id(client: TestClient) -> None:
     r = client.get("/api/site-overview?site_id=999")
     assert r.status_code == 200

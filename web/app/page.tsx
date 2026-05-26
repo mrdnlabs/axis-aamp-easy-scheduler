@@ -210,7 +210,7 @@ export default function HomePage() {
               they were demo content. Real ones can come back wired
               to live state later. */}
           <div className="shrink-0 border-t border-slate-200 bg-surface">
-            <Composer onSend={(text) => void send(text)} />
+            <Composer onSend={(text, files) => void send(text, files)} />
           </div>
           </>
           )}
