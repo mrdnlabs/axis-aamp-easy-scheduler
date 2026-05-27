@@ -234,9 +234,10 @@ export default function HomePage() {
         </div>
 
         {/* Artifact pane — opens on demand. Data comes from the
-            artifact store (server-emitted via emit_artifact_pill).
-            Falls back to a demo if the LLM opened the pane without
-            sending data. */}
+            artifact store (server-emitted via emit_artifact_pill). If
+            the LLM opened the pane without attaching data, we show an
+            empty-state for that artifact kind rather than fabricating
+            content. */}
         {artifact && (
           <ArtifactPane
             kind={artifact.artifact}
@@ -246,32 +247,24 @@ export default function HomePage() {
             {(() => {
               const live = artifacts[artifactStoreKey(artifact)];
               if (artifact.artifact === "day_template") {
-                return (
-                  <DayTemplateArtifact
-                    data={
-                      live?.kind === "day_template"
-                        ? live
-                        : demoDayTemplate(artifact.key)
-                    }
-                  />
+                return live?.kind === "day_template" ? (
+                  <DayTemplateArtifact data={live} />
+                ) : (
+                  <ArtifactEmpty kind="day_template" />
                 );
               }
               if (artifact.artifact === "onboarding") {
-                return (
-                  <OnboardingArtifact
-                    data={
-                      live?.kind === "onboarding"
-                        ? live
-                        : demoOnboarding(artifact.key)
-                    }
-                  />
+                return live?.kind === "onboarding" ? (
+                  <OnboardingArtifact data={live} />
+                ) : (
+                  <ArtifactEmpty kind="onboarding" />
                 );
               }
               if (artifact.artifact === "discovery") {
                 return live?.kind === "discovery" ? (
                   <DiscoveryArtifact data={live} />
                 ) : (
-                  <DiscoveryEmpty />
+                  <ArtifactEmpty kind="discovery" />
                 );
               }
               return null;
@@ -350,52 +343,25 @@ function artifactTitle(a: { artifact: ArtifactKind; key: string }): string {
 }
 
 /**
- * Stand-in until real artifact data flows from the server (the
- * artifact_pill part currently carries only ``key``, not the full
- * payload). When the backend extends ``ArtifactPillPart`` with a
- * ``data`` field, replace these stand-ins with a lookup against
- * received data.
+ * Empty-state for the artifact pane. Renders when the LLM opened the
+ * pane via ``emit_artifact_pill`` but didn't attach ``data`` (or
+ * attached a malformed payload). We deliberately don't fabricate
+ * sample content — the user should see what the LLM actually
+ * produced, even if that's "nothing yet".
  */
-function demoOnboarding(key: string): import("@/lib/types").OnboardingArtifact {
-  return {
-    kind: "onboarding",
-    ip: key || "192.168.1.123",
-    model: "C1710",
-    mac: "E8:27:25:09:59:C6",
-    arch: "aarch64",
-    firmware: "12.9.57",
-    classification: "audio:speaker",
-    steps: [
-      { name: "Inspect device", status: "success", detail: "C1710 fw 12.9.57; factory-default", duration_ms: 620 },
-      { name: "Authenticate", status: "success", detail: "Created root user with fleet password", duration_ms: 480 },
-      { name: "Install ACAP", status: "running", detail: "Uploading AXIS_Audio_Manager_Pro_5_1_34_aarch64.eap…" },
-      { name: "Point at AAM Pro", status: "pending" },
-    ],
+function ArtifactEmpty({ kind }: { kind: ArtifactKind }) {
+  const HINT: Record<ArtifactKind, string> = {
+    day_template:
+      "No day-template data attached to this pill yet. Ask the assistant to fetch or build one and re-emit the pill with data.",
+    onboarding:
+      "No onboarding state attached to this pill yet. The next progress update will populate this view — or ask the assistant for a status check.",
+    discovery:
+      "No discovery data attached to this pill yet. The next sweep will populate this view — or ask the assistant to run a fresh discovery and surface the result here.",
   };
-}
-
-function DiscoveryEmpty() {
   return (
     <div className="text-13 text-slate-500 leading-relaxed">
-      <em>
-        No discovery data attached to this pill yet. The next sweep will
-        populate this view — or ask the assistant to run a fresh
-        discovery and surface the result here.
-      </em>
+      <em>{HINT[kind]}</em>
     </div>
   );
 }
 
-function demoDayTemplate(key: string): import("@/lib/types").DayTemplateArtifact {
-  return {
-    kind: "day_template",
-    title: key || "Day template (demo)",
-    recurrence: "Weekly",
-    events: [
-      { time: "08:00", label: "First bell", destination: "Elementary", tone: "regular" },
-      { time: "08:55", label: "Period 1 end (passing)", destination: "Elementary", tone: "regular" },
-      { time: "12:00", label: "Lunch chime", destination: "Cafeteria", tone: "announce" },
-      { time: "14:30", label: "Dismissal", destination: "All zones", tone: "regular" },
-    ],
-  };
-}
